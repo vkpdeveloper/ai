@@ -284,6 +284,82 @@ describe('XaiResponsesLanguageModel', () => {
       });
     });
 
+    describe('incomplete finish reasons', () => {
+      it.each([
+        ['max_output_tokens', 'length'],
+        ['content_filter', 'content-filter'],
+        ['max_prompt_tokens', 'other'],
+        ['max_time_limit', 'other'],
+        ['unknown_reason', 'other'],
+      ])(
+        'should map %s to %s and preserve the raw reason',
+        async (reason, unified) => {
+          prepareJsonResponse({
+            object: 'response',
+            status: 'incomplete',
+            incomplete_details: { reason },
+            output: [
+              {
+                type: 'message',
+                id: 'msg_123',
+                role: 'assistant',
+                status: 'incomplete',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: 'The answer is',
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 12, output_tokens: 16, total_tokens: 28 },
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+            maxOutputTokens: 16,
+          });
+
+          expect(result.finishReason).toStrictEqual({ unified, raw: reason });
+          expect(result.content).toStrictEqual([
+            { type: 'text', text: 'The answer is' },
+          ]);
+          expect(result.usage).toMatchObject({
+            inputTokens: { total: 12 },
+            outputTokens: { total: 16 },
+          });
+        },
+      );
+
+      it.each([
+        { status: 'completed', incompleteDetails: undefined, unified: 'stop' },
+        { status: 'completed', incompleteDetails: null, unified: 'stop' },
+        {
+          status: 'incomplete',
+          incompleteDetails: undefined,
+          unified: 'other',
+        },
+        { status: 'incomplete', incompleteDetails: null, unified: 'other' },
+      ])(
+        'should fall back to $status when incomplete_details is $incompleteDetails',
+        async ({ status, incompleteDetails, unified }) => {
+          prepareJsonResponse({
+            object: 'response',
+            status,
+            incomplete_details: incompleteDetails,
+            output: [],
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+          });
+
+          expect(result.finishReason).toStrictEqual({ unified, raw: status });
+        },
+      );
+    });
+
     describe('reasoning content', () => {
       it('should extract reasoning with encrypted content when store=false', async () => {
         prepareJsonResponse({
