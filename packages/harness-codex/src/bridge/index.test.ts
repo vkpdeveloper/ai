@@ -264,24 +264,28 @@ describe('Codex bridge config', () => {
     },
   );
 
-  test('configures a direct OpenAI endpoint', async () => {
-    process.env.CODEX_API_KEY = 'CODEX_API_KEY';
-    process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
+  test.each(['https://api.openai.com/v1', 'https://api.openai.com/v1/'])(
+    'configures a direct OpenAI endpoint at %s',
+    async baseUrl => {
+      process.env.CODEX_API_KEY = 'CODEX_API_KEY';
+      process.env.OPENAI_BASE_URL = baseUrl;
 
-    await import('./index');
+      await import('./index');
 
-    expect(state.appServerOptions[0]?.codexConfig).toMatchObject({
-      model_provider: 'agent_bridge_openai',
-      model_providers: {
-        agent_bridge_openai: {
-          base_url: 'https://api.openai.com/v1',
-          env_key: 'CODEX_API_KEY',
-          supports_websockets: false,
+      expect(state.appServerOptions[0]?.codexConfig).toMatchObject({
+        model_provider: 'agent_bridge_openai',
+        model_providers: {
+          agent_bridge_openai: {
+            base_url: baseUrl,
+            env_key: 'CODEX_API_KEY',
+            supports_standalone_web_search: true,
+            supports_websockets: false,
+          },
         },
-      },
-      preferred_auth_method: 'apikey',
-    });
-  });
+        preferred_auth_method: 'apikey',
+      });
+    },
+  );
 
   test('configures direct API key auth without an explicit base URL', async () => {
     process.env.CODEX_API_KEY = 'CODEX_API_KEY';
@@ -295,11 +299,38 @@ describe('Codex bridge config', () => {
           "base_url": "https://api.openai.com/v1",
           "env_key": "CODEX_API_KEY",
           "name": "Agent Bridge OpenAI",
+          "supports_standalone_web_search": true,
           "supports_websockets": false,
           "wire_api": "responses",
         },
       }
     `);
+  });
+
+  test('does not assume standalone web search support for a custom endpoint', async () => {
+    process.env.CODEX_API_KEY = 'CODEX_API_KEY';
+    process.env.OPENAI_BASE_URL = 'https://openai-compatible.test/v1';
+
+    await import('./index');
+
+    expect(state.appServerOptions[0]?.codexConfig).toHaveProperty(
+      'model_providers.agent_bridge_openai.base_url',
+      'https://openai-compatible.test/v1',
+    );
+    expect(state.appServerOptions[0]?.codexConfig).not.toHaveProperty(
+      'model_providers.agent_bridge_openai.supports_standalone_web_search',
+    );
+  });
+
+  test('preserves the built-in provider without API key auth or a base URL', async () => {
+    await import('./index');
+
+    expect(state.appServerOptions[0]?.codexConfig).not.toHaveProperty(
+      'model_provider',
+    );
+    expect(state.appServerOptions[0]?.codexConfig).not.toHaveProperty(
+      'model_providers',
+    );
   });
 
   test('injects session instructions as developer instructions', async () => {
@@ -336,6 +367,9 @@ describe('Codex bridge config', () => {
 
     await import('./index');
 
+    expect(state.appServerOptions[0]?.codexConfig).not.toHaveProperty(
+      'model_providers.agent_bridge_openai.supports_standalone_web_search',
+    );
     expect({
       model: state.appServerOptions[0]?.codexModel,
       reasoningSummary:
@@ -368,6 +402,7 @@ describe('Codex bridge config', () => {
             "x-tenant": "acme",
           },
           "name": "Agent Bridge OpenAI",
+          "supports_standalone_web_search": true,
           "supports_websockets": false,
           "wire_api": "responses",
         },
