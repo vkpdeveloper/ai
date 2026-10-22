@@ -2905,6 +2905,102 @@ describe('streamText', () => {
       expect(await result.finishReason).toBe('stop');
     });
 
+    describe.each(['onError', 'onChunk', 'callback retry'])(
+      'stream cancellation after async %s',
+      callback => {
+        it.each([true, false])(
+          'should retry an already errored provider stream (recovery: %s)',
+          async recover => {
+            let callCount = 0;
+            const errors: unknown[] = [];
+
+            const result = streamText({
+              model: new MockLanguageModelV4({
+                doStream: async () => {
+                  const error = new Error(`provider error ${++callCount}`);
+
+                  if (recover && callCount === 2) {
+                    return {
+                      stream: convertArrayToReadableStream([
+                        { type: 'text-start', id: '1' },
+                        { type: 'text-delta', id: '1', delta: 'recovered' },
+                        { type: 'text-end', id: '1' },
+                        {
+                          type: 'finish',
+                          finishReason: { unified: 'stop', raw: 'stop' },
+                          usage: testUsage,
+                        },
+                      ]),
+                    };
+                  }
+
+                  let sent = false;
+                  return {
+                    stream: new ReadableStream<LanguageModelV4StreamPart>(
+                      {
+                        pull(controller) {
+                          if (sent) {
+                            controller.error(error);
+                            return;
+                          }
+                          sent = true;
+                          controller.enqueue({ type: 'error', error });
+                        },
+                      },
+                      { highWaterMark: 0 },
+                    ),
+                  };
+                },
+              }),
+              prompt: 'test-input',
+              maxRetries: 0,
+              streamRetries: callback === 'callback retry' ? 0 : 1,
+              onChunk: async ({ chunk }) => {
+                if (callback === 'onChunk' && chunk.type === 'error') {
+                  await delay(0);
+                }
+              },
+              onError: async ({ error }) => {
+                errors.push(error);
+                if (callback !== 'onChunk') {
+                  await delay(0);
+                }
+                if (callback === 'callback retry') {
+                  return { retry: true };
+                }
+              },
+            });
+
+            if (recover) {
+              const parts = await convertAsyncIterableToArray(
+                result.fullStream,
+              );
+              expect(parts).toContainEqual({
+                type: 'text-delta',
+                id: '1',
+                text: 'recovered',
+              });
+              expect(parts.some(part => part.type === 'error')).toBe(false);
+              expect(await result.text).toBe('recovered');
+              expect(await result.finishReason).toBe('stop');
+            } else {
+              await expect(result.text).rejects.toThrow('provider error 2');
+            }
+
+            expect(callCount).toBe(2);
+            expect(errors).toEqual(
+              recover
+                ? [new Error('provider error 1')]
+                : [
+                    new Error('provider error 1'),
+                    new Error('provider error 2'),
+                  ],
+            );
+          },
+        );
+      },
+    );
+
     it('should exclude failed-attempt text from structured output state', async () => {
       let callCount = 0;
 
