@@ -726,6 +726,9 @@ Called after the provider response has been normalized and parsed, before local 
 
 Called before a local tool's `execute` function runs.
 
+Telemetry integrations can receive an optional `timestamp: Date` with the actual
+start time when a durable workflow reports execution after the tool completes.
+
 <PropertiesTable
   content={[
     {
@@ -756,6 +759,9 @@ Called before a local tool's `execute` function runs.
 #### onToolExecutionEnd
 
 Called after a local tool's `execute` function completes or errors.
+
+Telemetry integrations can receive an optional `timestamp: Date` with the actual
+end time when a durable workflow reports execution after the tool completes.
 
 <PropertiesTable
   content={[

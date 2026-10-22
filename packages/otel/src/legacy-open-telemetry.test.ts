@@ -20,6 +20,11 @@ import {
   type SpanOptions,
   type Tracer,
 } from '@opentelemetry/api';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { z } from 'zod/v4';
 import {
   embed,
@@ -611,6 +616,33 @@ describe('LegacyOpenTelemetry', () => {
   });
 
   describe('onToolExecutionEnd', () => {
+    it('honors timestamps for deferred tool telemetry', () => {
+      const exporter = new InMemorySpanExporter();
+      const provider = new BasicTracerProvider({
+        spanProcessors: [new SimpleSpanProcessor(exporter)],
+      });
+      const integration = new LegacyOpenTelemetry({
+        tracer: provider.getTracer('legacy-timing-test'),
+      });
+      const startTime = new Date('2026-01-01T00:00:00Z');
+      const endTime = new Date(startTime.getTime() + 250);
+      integration.onStart(makeOnStartEvent());
+      integration.onStepStart(makeStepStartEvent());
+      integration.onToolExecutionStart(
+        makeToolCallStartEvent({ timestamp: startTime }),
+      );
+      integration.onToolExecutionEnd({
+        ...makeToolCallFinishEvent(true),
+        timestamp: endTime,
+      });
+      const span = exporter
+        .getFinishedSpans()
+        .find(span => span.name === 'ai.toolCall');
+      expect(span).toBeDefined();
+      expect(span!.startTime).toEqual([startTime.getTime() / 1000, 0]);
+      expect(span!.duration).toEqual([0, 250_000_000]);
+    });
+
     it('ends the tool span on success', () => {
       otelIntegration.onStart!(makeOnStartEvent());
       otelIntegration.onStepStart!(makeStepStartEvent());

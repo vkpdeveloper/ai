@@ -1178,6 +1178,32 @@ describe('OpenTelemetry', () => {
   });
 
   describe('onToolExecutionStart / onToolExecutionEnd', () => {
+    it('preserves execution timestamps for deferred tool telemetry', () => {
+      const sdkTrace = createSdkTracer();
+      const deferredIntegration = new OpenTelemetry({
+        tracer: sdkTrace.tracer,
+      });
+      const startTime = new Date(Date.now() - 1000);
+      const endTime = new Date(startTime.getTime() + 250);
+      deferredIntegration.onStart(makeOnStartEvent());
+      deferredIntegration.onToolExecutionStart(
+        makeToolCallStartEvent({ timestamp: startTime }),
+      );
+      deferredIntegration.onToolExecutionEnd({
+        ...makeToolCallFinishEvent(true),
+        timestamp: endTime,
+        toolExecutionMs: 250,
+      });
+
+      const span = getExportedSpan(sdkTrace.exporter, 'execute_tool myTool');
+      expect(span.startTime).toEqual([
+        Math.floor(startTime.getTime() / 1000),
+        (startTime.getTime() % 1000) * 1e6,
+      ]);
+      expect(span.duration).toEqual([0, 250_000_000]);
+      expect(span.attributes['gen_ai.execute_tool.duration']).toBe(0.25);
+    });
+
     it('creates an execute_tool span with correct attributes', () => {
       integration.onStart!(makeOnStartEvent());
       integration.onStepStart!(makeStepStartEvent());
