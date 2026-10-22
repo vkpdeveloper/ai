@@ -2765,7 +2765,9 @@ class DefaultStreamTextResult<
                   callbackStreamRetryCount++;
                 }
 
-                await languageModelStreamReader.cancel(error);
+                // The discarded stream may already have errored while callbacks
+                // were awaited. A failed cancellation must not prevent retrying.
+                await languageModelStreamReader.cancel(error).catch(() => {});
                 bufferedAttemptParts = [];
                 closeOpenAttemptParts();
 
