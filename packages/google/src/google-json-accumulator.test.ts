@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { GoogleJSONAccumulator } from './google-json-accumulator';
+import {
+  GoogleJSONAccumulator,
+  type PartialArg,
+} from './google-json-accumulator';
 
 describe('GoogleJSONAccumulator', () => {
   describe('flat paths', () => {
@@ -192,7 +195,7 @@ describe('GoogleJSONAccumulator', () => {
       `);
     });
 
-    it('should skip args with no resolvable value', () => {
+    it('should preserve an empty object represented by a value-less path', () => {
       const accumulator = new GoogleJSONAccumulator();
       const result = accumulator.processPartialArgs([
         { jsonPath: '$.something' },
@@ -200,8 +203,10 @@ describe('GoogleJSONAccumulator', () => {
 
       expect(result).toMatchInlineSnapshot(`
         {
-          "currentJSON": {},
-          "textDelta": "",
+          "currentJSON": {
+            "something": {},
+          },
+          "textDelta": "{"something":{}",
         }
       `);
     });
@@ -217,6 +222,136 @@ describe('GoogleJSONAccumulator', () => {
         }
       `);
     });
+  });
+
+  describe('empty containers', () => {
+    it.each<{
+      name: string;
+      partialArgs: PartialArg[];
+      expected: Record<string, unknown>;
+    }>([
+      {
+        name: 'empty array',
+        partialArgs: [{ jsonPath: '$.tags[]' }],
+        expected: { tags: [] },
+      },
+      {
+        name: 'nested empty array',
+        partialArgs: [
+          { jsonPath: '$.nested.tags[]' },
+          { jsonPath: '$.nested' },
+        ],
+        expected: { nested: { tags: [] } },
+      },
+      {
+        name: 'nested empty object',
+        partialArgs: [{ jsonPath: '$.nested.options' }],
+        expected: { nested: { options: {} } },
+      },
+      {
+        name: 'empty objects inside an array',
+        partialArgs: [
+          { jsonPath: '$.items[0]' },
+          { jsonPath: '$.items[1]' },
+          { jsonPath: '$.items[]' },
+        ],
+        expected: { items: [{}, {}] },
+      },
+      {
+        name: 'empty arrays inside an array',
+        partialArgs: [
+          { jsonPath: '$.items[0][]' },
+          { jsonPath: '$.items[1][]' },
+          { jsonPath: '$.items[]' },
+        ],
+        expected: { items: [[], []] },
+      },
+      {
+        name: 'repeated empty container markers',
+        partialArgs: [
+          { jsonPath: '$.tags[]' },
+          { jsonPath: '$.tags[]' },
+          { jsonPath: '$.options' },
+          { jsonPath: '$.options' },
+        ],
+        expected: { tags: [], options: {} },
+      },
+      {
+        name: 'populated containers followed by closing markers',
+        partialArgs: [
+          {
+            jsonPath: '$.items[0].name',
+            stringValue: 'hel',
+            willContinue: true,
+          },
+          { jsonPath: '$.items[0].name', stringValue: 'lo' },
+          { jsonPath: '$.items[0].name' },
+          { jsonPath: '$.items[0]' },
+          { jsonPath: '$.items[1].tags[]' },
+          { jsonPath: '$.items[1]' },
+          { jsonPath: '$.items[]' },
+          { jsonPath: '$.options.enabled', boolValue: true },
+          { jsonPath: '$.options' },
+        ],
+        expected: {
+          items: [{ name: 'hello' }, { tags: [] }],
+          options: { enabled: true },
+        },
+      },
+      {
+        name: 'empty containers mixed with falsy scalars and their terminators',
+        partialArgs: [
+          { jsonPath: '$.emptyStr', stringValue: '' },
+          { jsonPath: '$.emptyStr' },
+          { jsonPath: '$.tags[]' },
+          { jsonPath: '$.zero', numberValue: 0 },
+          { jsonPath: '$.zero' },
+          { jsonPath: '$.options' },
+          { jsonPath: '$.no', boolValue: false },
+          { jsonPath: '$.no' },
+          { jsonPath: '$.nil', nullValue: 'NULL_VALUE' },
+          { jsonPath: '$.nil' },
+        ],
+        expected: {
+          emptyStr: '',
+          tags: [],
+          zero: 0,
+          options: {},
+          no: false,
+          nil: null,
+        },
+      },
+      {
+        name: 'root object marker',
+        partialArgs: [{ jsonPath: '$' }],
+        expected: {},
+      },
+      {
+        name: 'empty containers at special property names',
+        partialArgs: [
+          { jsonPath: '$.__proto__' },
+          { jsonPath: '$.constructor.prototype.tags[]' },
+          { jsonPath: '$.$[]' },
+        ],
+        expected: {
+          ['__proto__']: {},
+          constructor: { prototype: { tags: [] } },
+          $: [],
+        },
+      },
+    ])(
+      'should preserve $name and produce matching text deltas',
+      ({ partialArgs, expected }) => {
+        const accumulator = new GoogleJSONAccumulator();
+        const deltas = partialArgs.map(
+          arg => accumulator.processPartialArgs([arg]).textDelta,
+        );
+        const { finalJSON, closingDelta } = accumulator.finalize();
+
+        expect(JSON.parse(finalJSON)).toEqual(expected);
+        expect(deltas.join('') + closingDelta).toBe(JSON.stringify(expected));
+      },
+    );
   });
 
   describe('prototype pollution protection', () => {

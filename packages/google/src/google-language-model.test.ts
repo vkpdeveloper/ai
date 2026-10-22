@@ -6274,6 +6274,107 @@ describe('doStream', () => {
     });
   });
 
+  it.each([true, false])(
+    'should preserve empty containers in streamed tool input (initial partialArgs: %s)',
+    async initialPartialArgs => {
+      // Synthetic Vertex chunks, including object and array closing markers.
+      const partialArgs = [
+        { jsonPath: '$.id', stringValue: 'x', willContinue: true },
+        { jsonPath: '$.id' },
+        { jsonPath: '$.emptyArr[]' },
+        { jsonPath: '$.emptyObj' },
+        { jsonPath: '$.emptyStr', stringValue: '' },
+        { jsonPath: '$.nested.tags[]' },
+        { jsonPath: '$.nested' },
+        { jsonPath: '$.zero', numberValue: 0 },
+        { jsonPath: '$.no', boolValue: false },
+        { jsonPath: '$.nil', nullValue: 'NULL_VALUE' },
+      ];
+      const functionCalls = [
+        {
+          name: 't',
+          willContinue: true,
+          ...(initialPartialArgs
+            ? { partialArgs: partialArgs.slice(0, 4) }
+            : {}),
+        },
+        ...partialArgs.slice(initialPartialArgs ? 4 : 0).map(arg => ({
+          partialArgs: [arg],
+          willContinue: true,
+        })),
+        {},
+      ];
+
+      server.urls[TEST_URL_GEMINI_PRO].response = {
+        type: 'stream-chunks',
+        chunks: [
+          ...functionCalls.map(
+            functionCall =>
+              `data: ${JSON.stringify({
+                candidates: [
+                  { content: { role: 'model', parts: [{ functionCall }] } },
+                ],
+              })}\n\n`,
+          ),
+          `data: ${JSON.stringify({ candidates: [{ finishReason: 'STOP' }] })}\n\n`,
+        ],
+      };
+
+      const vertexModel = new GoogleLanguageModel('gemini-pro', {
+        provider: 'google.vertex.chat',
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+        headers: { 'x-goog-api-key': 'test-api-key' },
+        generateId: () => 'test-id',
+      });
+      const { stream } = await vertexModel.doStream({
+        prompt: TEST_PROMPT,
+        providerOptions: { google: { streamFunctionCallArguments: true } },
+        tools: [
+          { type: 'function', name: 't', inputSchema: { type: 'object' } },
+        ],
+      });
+      const events = await convertReadableStreamToArray(stream);
+      const expectedInput = JSON.stringify({
+        id: 'x',
+        emptyArr: [],
+        emptyObj: {},
+        emptyStr: '',
+        nested: { tags: [] },
+        zero: 0,
+        no: false,
+        nil: null,
+      });
+
+      expect(events.filter(event => event.type === 'tool-call')).toEqual([
+        expect.objectContaining({
+          toolCallId: 'test-id',
+          toolName: 't',
+          input: expectedInput,
+        }),
+      ]);
+      expect(
+        events
+          .filter(event => event.type === 'tool-input-delta')
+          .map(event => event.delta)
+          .join(''),
+      ).toBe(expectedInput);
+      expect(
+        events.filter(event => event.type === 'tool-input-start'),
+      ).toHaveLength(1);
+      expect(
+        events.filter(event => event.type === 'tool-input-end'),
+      ).toHaveLength(1);
+      expect(events.some(event => event.type === 'error')).toBe(false);
+      expect(
+        events.find(event => event.type === 'finish')?.finishReason.unified,
+      ).toBe('tool-calls');
+      expect(
+        (await server.calls[0].requestBodyJson).toolConfig.functionCallingConfig
+          .streamFunctionCallArguments,
+      ).toBe(true);
+    },
+  );
+
   describe('streaming-no-args-tool-call', () => {
     beforeEach(() => {
       prepareChunksFixtureResponse('google-stream-no-args-tool-call');
