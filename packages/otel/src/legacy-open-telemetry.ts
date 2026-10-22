@@ -141,6 +141,12 @@ interface OtelStepStartEvent<
   readonly stepToolChoice?: unknown;
 }
 
+interface ToolSpan {
+  span: Span;
+  context: OpenTelemetryContext;
+  startTime?: Date;
+}
+
 interface CallState {
   operationId: string;
   telemetry: TelemetryOptions | undefined;
@@ -151,13 +157,16 @@ interface CallState {
   embedSpans: Map<string, { span: Span; context: OpenTelemetryContext }>;
   rerankSpan: { span: Span; context: OpenTelemetryContext } | undefined;
   decisionSpan: { span: Span; context: OpenTelemetryContext } | undefined;
-  toolSpans: Map<string, { span: Span; context: OpenTelemetryContext }>;
+  toolSpans: Map<string, ToolSpan>;
   baseTelemetryAttributes: Attributes;
   settings: Record<string, unknown>;
 }
 
 export class LegacyOpenTelemetry implements Telemetry {
   private readonly callStates = new Map<string, CallState>();
+  // Durable tools can report their lifecycle in a different process from the
+  // model call. Keep those spans independent of the model's in-memory state.
+  private readonly standaloneToolSpans = new Map<string, ToolSpan>();
 
   /**
    * The tracer to use for the telemetry data.
@@ -701,11 +710,15 @@ export class LegacyOpenTelemetry implements Telemetry {
     state.stepContext = trace.setSpan(state.rootContext, state.stepSpan);
   }
 
-  onToolExecutionStart(event: ToolExecutionStartEvent<ToolSet>): void {
+  onToolExecutionStart(
+    event: InferTelemetryEvent<ToolExecutionStartEvent<ToolSet>>,
+  ): void {
     const state = this.getCallState(event.callId);
-    if (!state?.stepContext) return;
-
-    const { telemetry } = state;
+    if (state == null && event.startTime == null) return;
+    if (state != null && state.stepContext == null) return;
+    const parentContext =
+      state?.stepContext ?? state?.rootContext ?? context.active();
+    const telemetry = state?.telemetry ?? event;
     const { toolCall } = event;
 
     const attributes = selectAttributes(telemetry, {
@@ -714,7 +727,7 @@ export class LegacyOpenTelemetry implements Telemetry {
         telemetry,
       }),
       ...Object.fromEntries(
-        Object.entries(state.baseTelemetryAttributes).filter(([key]) =>
+        Object.entries(state?.baseTelemetryAttributes ?? {}).filter(([key]) =>
           key.startsWith('ai.settings.context.'),
         ),
       ),
@@ -727,26 +740,41 @@ export class LegacyOpenTelemetry implements Telemetry {
 
     const toolSpan = this.tracer.startSpan(
       'ai.toolCall',
-      { attributes },
-      state.stepContext,
+      { attributes, startTime: event.startTime },
+      parentContext,
     );
-    const toolContext = trace.setSpan(state.stepContext, toolSpan);
+    const toolContext = trace.setSpan(parentContext, toolSpan);
 
-    state.toolSpans.set(toolCall.toolCallId, {
+    const entry = {
       span: toolSpan,
       context: toolContext,
-    });
+      startTime: event.startTime,
+    };
+    if (state) {
+      state.toolSpans.set(toolCall.toolCallId, entry);
+    } else {
+      this.standaloneToolSpans.set(
+        JSON.stringify([event.callId, toolCall.toolCallId]),
+        entry,
+      );
+    }
   }
 
-  onToolExecutionEnd(event: ToolExecutionEndEvent<ToolSet>): void {
+  onToolExecutionEnd(
+    event: InferTelemetryEvent<ToolExecutionEndEvent<ToolSet>>,
+  ): void {
     const state = this.getCallState(event.callId);
-    if (!state) return;
-
-    const toolSpanEntry = state.toolSpans.get(event.toolCall.toolCallId);
+    const standaloneKey = JSON.stringify([
+      event.callId,
+      event.toolCall.toolCallId,
+    ]);
+    const toolSpanEntry =
+      state?.toolSpans.get(event.toolCall.toolCallId) ??
+      this.standaloneToolSpans.get(standaloneKey);
     if (!toolSpanEntry) return;
 
     const { span } = toolSpanEntry;
-    const { telemetry } = state;
+    const telemetry = state?.telemetry ?? event;
 
     const { toolOutput } = event;
     if (toolOutput.type === 'tool-result') {
@@ -765,8 +793,13 @@ export class LegacyOpenTelemetry implements Telemetry {
       recordSpanError(span, toolOutput.error);
     }
 
-    span.end();
-    state.toolSpans.delete(event.toolCall.toolCallId);
+    span.end(
+      toolSpanEntry.startTime == null
+        ? undefined
+        : new Date(toolSpanEntry.startTime.getTime() + event.toolExecutionMs),
+    );
+    state?.toolSpans.delete(event.toolCall.toolCallId);
+    this.standaloneToolSpans.delete(standaloneKey);
   }
 
   onStepEnd(event: GenerateTextStepEndEvent<ToolSet>): void {
