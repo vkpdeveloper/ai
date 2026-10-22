@@ -242,46 +242,131 @@ describe('XaiResponsesLanguageModel', () => {
         `);
       });
 
-      it('should return tool-calls finish reason when function_call is present', async () => {
-        prepareJsonResponse({
-          id: 'resp_123',
-          object: 'response',
-          status: 'completed',
-          model: 'grok-4-fast-non-reasoning',
-          output: [
-            {
-              type: 'function_call',
-              id: 'fc_123',
-              name: 'weather',
-              arguments: '{"location":"sf"}',
-              call_id: 'call_123',
-            },
-          ],
-          usage: { input_tokens: 10, output_tokens: 5 },
-        });
-
-        const result = await createModel().doGenerate({
-          prompt: TEST_PROMPT,
-          tools: [
-            {
-              type: 'function',
-              name: 'weather',
-              description: 'get weather',
-              inputSchema: {
-                type: 'object',
-                properties: { location: { type: 'string' } },
+      it.each([
+        { status: 'completed', incomplete_details: null, raw: 'completed' },
+        {
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          raw: 'max_output_tokens',
+        },
+      ])(
+        'should return tool-calls when function_call is present with status $status',
+        async ({ status, incomplete_details, raw }) => {
+          prepareJsonResponse({
+            id: 'resp_123',
+            object: 'response',
+            status,
+            incomplete_details,
+            model: 'grok-4-fast-non-reasoning',
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_123',
+                name: 'weather',
+                arguments: '{"location":"sf"}',
+                call_id: 'call_123',
               },
-            },
-          ],
-        });
+            ],
+            usage: { input_tokens: 10, output_tokens: 5 },
+          });
 
-        expect(result.finishReason).toMatchInlineSnapshot(`
-          {
-            "raw": "completed",
-            "unified": "tool-calls",
-          }
-        `);
-      });
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+            tools: [
+              {
+                type: 'function',
+                name: 'weather',
+                description: 'get weather',
+                inputSchema: {
+                  type: 'object',
+                  properties: { location: { type: 'string' } },
+                },
+              },
+            ],
+          });
+
+          expect(result.finishReason).toStrictEqual({
+            unified: 'tool-calls',
+            raw,
+          });
+        },
+      );
+    });
+
+    describe('incomplete finish reasons', () => {
+      it.each([
+        { reason: 'max_output_tokens', unified: 'length' },
+        { reason: 'max_prompt_tokens', unified: 'other' },
+        { reason: 'max_time_limit', unified: 'other' },
+        { reason: 'unknown_reason', unified: 'other' },
+      ])(
+        'should map $reason and preserve the raw reason',
+        async ({ reason, unified }) => {
+          prepareJsonResponse({
+            id: 'resp_123',
+            object: 'response',
+            status: 'incomplete',
+            incomplete_details: { reason },
+            output: [
+              {
+                type: 'message',
+                id: 'msg_1',
+                status: 'incomplete',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: 'The answer is',
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 12, output_tokens: 16 },
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+            maxOutputTokens: 16,
+          });
+
+          expect(result.finishReason).toStrictEqual({ unified, raw: reason });
+          expect(result.content).toStrictEqual([
+            { type: 'text', text: 'The answer is' },
+          ]);
+          expect(result.usage).toMatchObject({
+            inputTokens: { total: 12 },
+            outputTokens: { total: 16 },
+          });
+        },
+      );
+
+      it.each([
+        { status: 'completed', incomplete_details: undefined, unified: 'stop' },
+        { status: 'completed', incomplete_details: null, unified: 'stop' },
+        {
+          status: 'incomplete',
+          incomplete_details: undefined,
+          unified: 'other',
+        },
+        { status: 'incomplete', incomplete_details: null, unified: 'other' },
+      ])(
+        'should fall back to $status when incomplete_details is $incomplete_details',
+        async ({ status, incomplete_details, unified }) => {
+          prepareJsonResponse({
+            object: 'response',
+            status,
+            incomplete_details,
+            output: [],
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+          });
+
+          expect(result.finishReason).toStrictEqual({ unified, raw: status });
+        },
+      );
     });
 
     describe('reasoning content', () => {
