@@ -284,6 +284,95 @@ describe('XaiResponsesLanguageModel', () => {
       });
     });
 
+    describe('finish reasons', () => {
+      it.each([
+        {
+          status: 'incomplete',
+          incompleteDetails: { reason: 'max_output_tokens' },
+          expected: { unified: 'length', raw: 'max_output_tokens' },
+        },
+        {
+          status: 'incomplete',
+          incompleteDetails: { reason: 'max_prompt_tokens' },
+          expected: { unified: 'other', raw: 'max_prompt_tokens' },
+        },
+        {
+          status: 'incomplete',
+          incompleteDetails: { reason: 'max_time_limit' },
+          expected: { unified: 'other', raw: 'max_time_limit' },
+        },
+        {
+          status: 'incomplete',
+          incompleteDetails: { reason: 'unknown_reason' },
+          expected: { unified: 'other', raw: 'unknown_reason' },
+        },
+        {
+          status: 'incomplete',
+          incompleteDetails: null,
+          expected: { unified: 'other', raw: 'incomplete' },
+        },
+        {
+          status: 'incomplete',
+          incompleteDetails: undefined,
+          expected: { unified: 'other', raw: 'incomplete' },
+        },
+        {
+          status: 'completed',
+          incompleteDetails: null,
+          expected: { unified: 'stop', raw: 'completed' },
+        },
+        {
+          status: 'completed',
+          incompleteDetails: undefined,
+          expected: { unified: 'stop', raw: 'completed' },
+        },
+      ])(
+        'should map $status with incomplete_details $incompleteDetails to $expected',
+        async ({ status, incompleteDetails, expected }) => {
+          prepareJsonResponse({
+            id: 'resp_123',
+            object: 'response',
+            status,
+            incomplete_details: incompleteDetails,
+            model: 'grok-4-fast-non-reasoning',
+            output: [],
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+          });
+
+          expect(result.finishReason).toEqual(expected);
+        },
+      );
+
+      it('should preserve tool-calls finish reason for incomplete function calls', async () => {
+        prepareJsonResponse({
+          id: 'resp_123',
+          object: 'response',
+          status: 'incomplete',
+          incomplete_details: { reason: 'max_output_tokens' },
+          model: 'grok-4-fast-non-reasoning',
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_123',
+              name: 'weather',
+              arguments: '{"location":"sf"}',
+              call_id: 'call_123',
+            },
+          ],
+        });
+
+        const result = await createModel().doGenerate({ prompt: TEST_PROMPT });
+
+        expect(result.finishReason).toEqual({
+          unified: 'tool-calls',
+          raw: 'max_output_tokens',
+        });
+      });
+    });
+
     describe('reasoning content', () => {
       it('should extract reasoning with encrypted content when store=false', async () => {
         prepareJsonResponse({
