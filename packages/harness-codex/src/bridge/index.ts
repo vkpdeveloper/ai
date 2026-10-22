@@ -149,6 +149,10 @@ function resolveCodexRuntime({ start }: { start: StartMessage }): CodexRuntime {
         env_key: 'CODEX_API_KEY',
         wire_api: 'responses',
         supports_websockets: false,
+        // Codex requires this opt-in for OpenAI's standalone search endpoint.
+        ...(apiBaseUrl.replace(/\/+$/, '') === 'https://api.openai.com/v1'
+          ? { supports_standalone_web_search: true }
+          : {}),
         ...(start.headers != null || (hasGatewayAuth && HARNESS_CLIENT_APP)
           ? {
               http_headers: {
