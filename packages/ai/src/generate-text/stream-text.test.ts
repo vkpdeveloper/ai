@@ -2905,6 +2905,99 @@ describe('streamText', () => {
       expect(await result.finishReason).toBe('stop');
     });
 
+    describe.each([
+      { callback: 'onError', streamRetries: 1, requestRetry: false },
+      { callback: 'onChunk', streamRetries: 1, requestRetry: false },
+      { callback: 'onError', streamRetries: 0, requestRetry: true },
+      { callback: 'onChunk', streamRetries: 0, requestRetry: true },
+    ])(
+      'stream retry cancellation with async $callback and streamRetries=$streamRetries',
+      ({ callback, streamRetries, requestRetry }) => {
+        it.each([true, false])(
+          'should retry an already errored stream (recovery succeeds: %s)',
+          async recover => {
+            vi.useRealTimers();
+            const errors = [
+              new Error('provider error 1'),
+              new Error('provider error 2'),
+            ];
+            let callCount = 0;
+            const onError = vi.fn(async () => {
+              if (callback === 'onError') {
+                await delay(0);
+              }
+              return requestRetry ? { retry: true } : undefined;
+            });
+            const onConsumeError = vi.fn();
+
+            const result = streamText({
+              model: new MockLanguageModelV4({
+                doStream: async () => {
+                  const error = errors[callCount++];
+                  if (recover && callCount === 2) {
+                    return {
+                      stream: convertArrayToReadableStream([
+                        { type: 'text-start', id: '1' },
+                        { type: 'text-delta', id: '1', delta: 'recovered' },
+                        { type: 'text-end', id: '1' },
+                        {
+                          type: 'finish',
+                          finishReason: { unified: 'stop', raw: 'stop' },
+                          usage: testUsage,
+                        },
+                      ]),
+                    };
+                  }
+
+                  let sent = false;
+                  return {
+                    stream: new ReadableStream<LanguageModelV4StreamPart>(
+                      {
+                        pull(controller) {
+                          if (sent) {
+                            controller.error(error);
+                            return;
+                          }
+                          sent = true;
+                          controller.enqueue({ type: 'error', error });
+                        },
+                      },
+                      { highWaterMark: 0 },
+                    ),
+                  };
+                },
+              }),
+              prompt: 'test-input',
+              streamRetries,
+              onChunk: async ({ chunk }) => {
+                if (callback === 'onChunk' && chunk.type === 'error') {
+                  // Let the provider's next pull error the piped stream before
+                  // the retry loop tries to cancel the discarded attempt.
+                  await delay(0);
+                }
+              },
+              onError,
+            });
+
+            await result.consumeStream({ onError: onConsumeError });
+
+            expect(callCount).toBe(2);
+            expect(onError).toHaveBeenCalledTimes(recover ? 1 : 2);
+            expect(onError).toHaveBeenNthCalledWith(1, { error: errors[0] });
+            if (recover) {
+              await expect(result.text).resolves.toBe('recovered');
+              await expect(result.finishReason).resolves.toBe('stop');
+              expect(onConsumeError).not.toHaveBeenCalled();
+            } else {
+              expect(onError).toHaveBeenNthCalledWith(2, { error: errors[1] });
+              await expect(result.text).rejects.toBe(errors[1]);
+              expect(onConsumeError).toHaveBeenCalledWith(errors[1]);
+            }
+          },
+        );
+      },
+    );
+
     it('should exclude failed-attempt text from structured output state', async () => {
       let callCount = 0;
 
