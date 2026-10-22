@@ -2905,6 +2905,96 @@ describe('streamText', () => {
       expect(await result.finishReason).toBe('stop');
     });
 
+    describe.each([
+      { callback: 'onError', streamRetries: 1 },
+      { callback: 'onChunk', streamRetries: 1 },
+      { callback: 'onError', streamRetries: 0 },
+    ])(
+      'stream errors during async $callback with streamRetries=$streamRetries',
+      ({ callback, streamRetries }) => {
+        it.each([false, true])(
+          'should retry an already errored stream (retry fails: %s)',
+          async retryFails => {
+            let callCount = 0;
+            const errors: unknown[] = [];
+            const result = streamText({
+              model: new MockLanguageModelV4({
+                doStream: async () => {
+                  callCount++;
+                  if (callCount === 2 && !retryFails) {
+                    return {
+                      stream: convertArrayToReadableStream([
+                        { type: 'text-start', id: '1' },
+                        { type: 'text-delta', id: '1', delta: 'recovered' },
+                        { type: 'text-end', id: '1' },
+                        {
+                          type: 'finish',
+                          finishReason: { unified: 'stop', raw: 'stop' },
+                          usage: testUsage,
+                        },
+                      ]),
+                    };
+                  }
+
+                  const error = new Error(`provider error ${callCount}`);
+                  let sent = false;
+                  return {
+                    stream: new ReadableStream<LanguageModelV4StreamPart>(
+                      {
+                        pull(controller) {
+                          if (sent) {
+                            controller.error(error);
+                            return;
+                          }
+                          sent = true;
+                          controller.enqueue({ type: 'error', error });
+                        },
+                      },
+                      { highWaterMark: 0 },
+                    ),
+                  };
+                },
+              }),
+              prompt: 'test-input',
+              streamRetries,
+              onChunk: async ({ chunk }) => {
+                if (callback === 'onChunk' && chunk.type === 'error') {
+                  await delay(0);
+                }
+              },
+              onError: async ({ error }) => {
+                errors.push(error);
+                if (callback === 'onError') {
+                  // Let the piped stream error before retry cleanup cancels it.
+                  await delay(0);
+                }
+                if (streamRetries === 0) {
+                  return { retry: true };
+                }
+              },
+            });
+
+            if (retryFails) {
+              await expect(result.text).rejects.toThrow('provider error 2');
+              expect(errors).toEqual([
+                new Error('provider error 1'),
+                new Error('provider error 2'),
+              ]);
+            } else {
+              const parts = await convertAsyncIterableToArray(
+                result.fullStream,
+              );
+              expect(parts.filter(part => part.type === 'error')).toEqual([]);
+              expect(await result.text).toBe('recovered');
+              expect(await result.finishReason).toBe('stop');
+              expect(errors).toEqual([new Error('provider error 1')]);
+            }
+            expect(callCount).toBe(2);
+          },
+        );
+      },
+    );
+
     it('should exclude failed-attempt text from structured output state', async () => {
       let callCount = 0;
 
