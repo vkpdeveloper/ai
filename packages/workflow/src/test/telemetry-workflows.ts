@@ -1,9 +1,80 @@
 /**
  * Integration test workflows for WorkflowAgent telemetry.
  */
-import { getWritable } from 'workflow';
-import { mockTextModel } from '../providers/mock.js';
+import { tool } from 'ai';
+import { FatalError, getWritable } from 'workflow';
+import { z } from 'zod/v4';
+import { mockSequenceModel, mockTextModel } from '../providers/mock.js';
 import { WorkflowAgent } from '../workflow-agent.js';
+
+async function echoStep({ text }: { text: string }) {
+  'use step';
+  await new Promise(resolve => setTimeout(resolve, 30));
+  if (text === 'fail') throw new FatalError('echo failed');
+  return text;
+}
+
+export async function agentToolWithGlobalTelemetry(
+  mode: 'stream' | 'generate',
+  options: {
+    fail?: boolean;
+    disabled?: boolean;
+    local?: boolean;
+    private?: boolean;
+  } = {},
+) {
+  'use workflow';
+  const callbacks: string[] = [];
+  const localEvents: string[] = [];
+  const agent = new WorkflowAgent({
+    model: mockSequenceModel([
+      {
+        type: 'tool-call',
+        toolName: 'echo',
+        input: JSON.stringify({ text: options.fail ? 'fail' : 'hello' }),
+      },
+      { type: 'text', text: 'done' },
+    ]),
+    tools: {
+      echo: tool({
+        inputSchema: z.object({ text: z.string() }),
+        contextSchema: z.object({ visible: z.string(), secret: z.string() }),
+        execute: echoStep,
+      }),
+    },
+    toolsContext: { echo: { visible: 'included', secret: 'excluded' } },
+    telemetry: {
+      isEnabled: !options.disabled,
+      functionId: 'tool-telemetry-test',
+      recordInputs: !options.private,
+      recordOutputs: !options.private,
+      includeToolsContext: { echo: { visible: !options.private } },
+      integrations: options.local
+        ? {
+            onToolExecutionStart: event => {
+              localEvents.push(
+                `start:${event.callId}:${event.toolCall.toolName}`,
+              );
+            },
+            onToolExecutionEnd: event => {
+              localEvents.push(`end:${event.toolOutput.type}`);
+            },
+          }
+        : undefined,
+    },
+    onToolExecutionStart: () => {
+      callbacks.push('start');
+    },
+    onToolExecutionEnd: event => {
+      callbacks.push(event.success ? 'success' : 'error');
+    },
+  });
+  const result =
+    mode === 'stream'
+      ? await agent.stream({ prompt: 'echo hello', writable: getWritable() })
+      : await agent.generate({ prompt: 'echo hello' });
+  return { text: result.steps.at(-1)?.text, callbacks, localEvents };
+}
 
 async function getGlobalTelemetryIntegrationCount(): Promise<number | null> {
   'use step';

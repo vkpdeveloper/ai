@@ -6,6 +6,7 @@ import type {
   SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
 import {
+  generateId,
   getErrorMessage,
   isAbortError,
   withUserAgentSuffix,
@@ -33,6 +34,8 @@ import {
   type ToolCallRepairFunction,
   type ToolChoice,
   type ToolSet,
+  type ToolExecutionEndEvent,
+  type ToolExecutionStartEvent,
   type InferUITools,
   type UIMessage,
   type LanguageModel,
@@ -43,6 +46,8 @@ import {
   InvalidToolApprovalSignatureError,
 } from 'ai';
 import {
+  createTelemetryDispatcher,
+  filterIncludedContext,
   createRestrictedTelemetryDispatcher,
   DefaultGenerateTextResult,
   addLanguageModelUsage,
@@ -69,6 +74,7 @@ import type {
 import { resolveToolContext } from './resolve-tool-context.js';
 import { toModelResponseMessages } from './to-model-response-messages.js';
 import { modelCallIterator } from './model-call-iterator.js';
+import { shouldDispatchTelemetryInStep } from './model-call-telemetry.js';
 import {
   resolveWorkflowStreamResult,
   type WorkflowExecutionData,
@@ -1949,6 +1955,8 @@ export class WorkflowAgent<
       mergedOnToolExecutionStart,
       mergedOnToolExecutionEnd,
     } = await this.prepareInvocation(options, mode);
+    const dispatchToolTelemetryInStep =
+      isInWorkflow() && shouldDispatchTelemetryInStep(effectiveTelemetry);
     const initialResponseMessages: WorkflowAgentGenerateResult<TTools>['responseMessages'] =
       [];
     const abortReason = () =>
@@ -2362,6 +2370,39 @@ export class WorkflowAgent<
       toolsContext: toolsContext as unknown as InferToolSetContext<TTools>,
     });
 
+    async function dispatchToolExecutionEnd(
+      event: ToolExecutionEndEvent,
+      startTime: number,
+    ) {
+      if (dispatchToolTelemetryInStep) {
+        await recordToolExecutionTelemetry({
+          event: {
+            ...event,
+            // Exclude unselected context before serializing the step input.
+            toolContext: filterIncludedContext({
+              context: event.toolContext as Context,
+              includeContext: (
+                effectiveTelemetry?.includeToolsContext as
+                  | Record<
+                      string,
+                      CoreTelemetryOptions['includeRuntimeContext']
+                    >
+                  | undefined
+              )?.[event.toolCall.toolName],
+            }),
+          },
+          startTime,
+          telemetry: {
+            functionId: effectiveTelemetry?.functionId,
+            recordInputs: effectiveTelemetry?.recordInputs,
+            recordOutputs: effectiveTelemetry?.recordOutputs,
+          },
+        });
+      } else {
+        await telemetryDispatcher.onToolExecutionEnd?.(event);
+      }
+    }
+
     // Helper to wrap executeTool with onToolExecutionStart/onToolExecutionEnd callbacks
     async function executeToolWithCallbacks(
       toolCall: { toolCallId: string; toolName: string; input: unknown },
@@ -2396,14 +2437,15 @@ export class WorkflowAgent<
           toolContext: resolvedContext,
         } as WorkflowAgentToolExecutionStartEvent<TTools>);
       }
-      await telemetryDispatcher.onToolExecutionStart?.({
+      const telemetryEvent: ToolExecutionStartEvent = {
+        callId: 'workflow-agent',
         toolCall: toolCallEvent,
-        stepNumber: currentStepNumber,
         messages: modelMessages,
-        toolContext: resolvedContext as
-          | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-          | undefined,
-      });
+        toolContext: resolvedContext,
+      };
+      if (!dispatchToolTelemetryInStep) {
+        await telemetryDispatcher.onToolExecutionStart?.(telemetryEvent);
+      }
 
       const startTime = Date.now();
       let result: WorkflowToolExecutionResult;
@@ -2439,17 +2481,14 @@ export class WorkflowAgent<
             error: err,
           } as WorkflowAgentToolExecutionEndEvent<TTools>);
         }
-        await telemetryDispatcher.onToolExecutionEnd?.({
-          toolCall: toolCallEvent,
-          stepNumber: currentStepNumber,
-          durationMs,
-          messages: modelMessages,
-          toolContext: resolvedContext as
-            | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-            | undefined,
-          success: false,
-          error: err,
-        });
+        await dispatchToolExecutionEnd(
+          {
+            ...telemetryEvent,
+            toolExecutionMs: durationMs,
+            toolOutput: { ...toolCallEvent, type: 'tool-error', error: err },
+          },
+          startTime,
+        );
         throw err;
       }
 
@@ -2477,31 +2516,20 @@ export class WorkflowAgent<
           } as WorkflowAgentToolExecutionEndEvent<TTools>);
         }
       }
-      if (result.isError) {
-        await telemetryDispatcher.onToolExecutionEnd?.({
-          toolCall: toolCallEvent,
-          stepNumber: currentStepNumber,
-          durationMs,
-          messages: modelMessages,
-          toolContext: resolvedContext as
-            | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-            | undefined,
-          success: false,
-          error: result.rawOutput,
-        });
-      } else {
-        await telemetryDispatcher.onToolExecutionEnd?.({
-          toolCall: toolCallEvent,
-          stepNumber: currentStepNumber,
-          durationMs,
-          messages: modelMessages,
-          toolContext: resolvedContext as
-            | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-            | undefined,
-          success: true,
-          output: result.rawOutput,
-        });
-      }
+      await dispatchToolExecutionEnd(
+        {
+          ...telemetryEvent,
+          toolExecutionMs: durationMs,
+          toolOutput: result.isError
+            ? { ...toolCallEvent, type: 'tool-error', error: result.rawOutput }
+            : {
+                ...toolCallEvent,
+                type: 'tool-result',
+                output: result.rawOutput,
+              },
+        },
+        startTime,
+      );
       return result;
     }
 
@@ -3534,6 +3562,32 @@ async function writeApprovalToolResults(
   } finally {
     writer.releaseLock();
   }
+}
+
+async function recordToolExecutionTelemetry({
+  event,
+  startTime,
+  telemetry,
+}: {
+  event: ToolExecutionEndEvent;
+  startTime: number;
+  telemetry: Pick<
+    CoreTelemetryOptions,
+    'functionId' | 'recordInputs' | 'recordOutputs'
+  >;
+}) {
+  'use step';
+  // Tool execution may itself call durable steps, so only reporting runs here.
+  const dispatcher = createTelemetryDispatcher({ telemetry });
+  const callId = generateId();
+  await dispatcher.onToolExecutionStart?.({
+    callId,
+    toolCall: event.toolCall,
+    toolContext: event.toolContext,
+    messages: event.messages,
+    startTime: new Date(startTime),
+  });
+  await dispatcher.onToolExecutionEnd?.({ ...event, callId });
 }
 
 function isInWorkflow(): boolean {
