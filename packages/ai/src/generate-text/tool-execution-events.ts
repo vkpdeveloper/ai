@@ -22,6 +22,9 @@ type BaseToolExecutionStartFields = {
   /** Unique identifier for this generation call, used to correlate events. */
   readonly callId: string;
 
+  /** Original execution start time when telemetry is dispatched after execution. */
+  readonly startTime?: Date;
+
   /**
    * Messages that were sent to the language model to initiate the response that contained the tool call.
    * The messages **do not** include the system prompt nor the assistant response that contained the tool call.

@@ -284,6 +284,14 @@ telemetry: {
 
 Errors inside integrations are caught and do not break the generation flow.
 
+In a durable `WorkflowAgent`, globally registered integrations receive tool start
+and end events together in a reporting step after each tool completes. The start
+event includes `startTime`, and the end event includes `toolExecutionMs`, so
+OpenTelemetry preserves the measured execution interval. These tool spans can
+be exported without an active parent operation. Integration `executeTool`
+wrappers cannot wrap durable tool execution across the workflow step boundary;
+the agent's own tool callbacks still run around execution in the workflow.
+
 ### Tracing channel
 
 In Node.js, AI SDK telemetry lifecycle and execution events are also traced on
@@ -396,7 +404,8 @@ export function myIntegration(): Telemetry {
     {
       name: 'onToolExecutionStart',
       type: '(event: ToolExecutionStartEvent) => void | PromiseLike<void>',
-      description: "Called when a tool's execute function is about to run.",
+      description:
+        "Called when a tool's execute function is about to run. For deferred telemetry, the optional startTime (Date) contains the original execution start time.",
     },
     {
       name: 'onToolExecutionEnd',

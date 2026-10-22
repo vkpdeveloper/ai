@@ -36,7 +36,7 @@ export type LanguageModelCallTelemetry = {
  *
  * Each model call is reported as its own operation with a unique `callId`.
  */
-export function shouldDispatchModelCallTelemetryInStep(telemetry?: {
+export function shouldDispatchTelemetryInStep(telemetry?: {
   isEnabled?: boolean;
   integrations?: unknown;
 }): boolean {

@@ -2894,9 +2894,8 @@ describe('WorkflowAgent (ToolLoopAgent compat)', () => {
                 return execute();
               },
               onToolExecutionEnd: async event => {
-                const toolEvent = event as any;
                 events.push(
-                  `onToolExecutionEnd:${toolEvent.success ? 'success' : 'error'}`,
+                  `onToolExecutionEnd:${event.toolOutput.type === 'tool-result' ? 'success' : 'error'}`,
                 );
               },
             },

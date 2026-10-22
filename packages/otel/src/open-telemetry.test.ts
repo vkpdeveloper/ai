@@ -1178,6 +1178,46 @@ describe('OpenTelemetry', () => {
   });
 
   describe('onToolExecutionStart / onToolExecutionEnd', () => {
+    it.each([true, false])(
+      'exports a deferred tool span with original timing (success: %s)',
+      success => {
+        const { exporter, tracer } = createSdkTracer();
+        const telemetry = new OpenTelemetry({ tracer });
+        const startTime = new Date('2026-01-01T00:00:00.000Z');
+
+        telemetry.onToolExecutionStart(makeToolCallStartEvent({ startTime }));
+        telemetry.onToolExecutionEnd(
+          makeToolCallFinishEvent(success, { toolExecutionMs: 123 }),
+        );
+
+        const span = getExportedSpan(exporter, 'execute_tool myTool');
+        expect(span.startTime).toEqual([startTime.getTime() / 1000, 0]);
+        expect(span.duration).toEqual([0, 123_000_000]);
+        expect(span.attributes['gen_ai.execute_tool.duration']).toBe(0.123);
+        expect(span.status.code).toBe(
+          success ? SpanStatusCode.UNSET : SpanStatusCode.ERROR,
+        );
+        expect(exporter.getFinishedSpans()).toHaveLength(1);
+      },
+    );
+
+    it('honors recording settings for deferred tool spans', () => {
+      const { exporter, tracer } = createSdkTracer();
+      const telemetry = new OpenTelemetry({ tracer });
+      telemetry.onToolExecutionStart(
+        makeToolCallStartEvent({
+          startTime: new Date(),
+          recordInputs: false,
+          recordOutputs: false,
+        }),
+      );
+      telemetry.onToolExecutionEnd(makeToolCallFinishEvent(true));
+
+      const span = getExportedSpan(exporter, 'execute_tool myTool');
+      expect(span.attributes['gen_ai.tool.call.arguments']).toBeUndefined();
+      expect(span.attributes['gen_ai.tool.call.result']).toBeUndefined();
+    });
+
     it('creates an execute_tool span with correct attributes', () => {
       integration.onStart!(makeOnStartEvent());
       integration.onStepStart!(makeStepStartEvent());

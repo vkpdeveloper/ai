@@ -34,7 +34,7 @@ import {
 import { buildModelStepResult } from './build-model-step-result.js';
 import { doGenerateStep } from './do-generate-step.js';
 import { doStreamStep } from './do-stream-step.js';
-import { shouldDispatchModelCallTelemetryInStep } from './model-call-telemetry.js';
+import { shouldDispatchTelemetryInStep } from './model-call-telemetry.js';
 import type {
   ModelCallStreamPart,
   ModelCallOptions,
@@ -235,8 +235,7 @@ export async function* modelCallIterator({
     includeRuntimeContext: telemetry?.includeRuntimeContext,
     includeToolsContext: telemetry?.includeToolsContext,
   }) as any;
-  const dispatchTelemetryInStep =
-    shouldDispatchModelCallTelemetryInStep(telemetry);
+  const dispatchTelemetryInStep = shouldDispatchTelemetryInStep(telemetry);
 
   while (!done) {
     // Check for abort signal
