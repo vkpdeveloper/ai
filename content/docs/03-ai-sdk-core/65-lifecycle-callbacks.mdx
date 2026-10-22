@@ -734,6 +734,12 @@ Called before a local tool's `execute` function runs.
       description: 'Unique identifier for this generation call.',
     },
     {
+      name: 'startTime',
+      type: 'number | undefined',
+      description:
+        'Original execution start time in milliseconds since the Unix epoch. Present when telemetry is dispatched after execution, such as in a durable workflow.',
+    },
+    {
       name: 'toolCall',
       type: 'TypedToolCall',
       description:

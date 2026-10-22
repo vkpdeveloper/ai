@@ -1178,6 +1178,71 @@ describe('OpenTelemetry', () => {
   });
 
   describe('onToolExecutionStart / onToolExecutionEnd', () => {
+    it('reports deferred tool execution without generation state using the original timing', () => {
+      const startTime = Date.now() - 10_000;
+      integration.onToolExecutionStart!(makeToolCallStartEvent({ startTime }));
+      integration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+
+      expect(tracer.spans).toHaveLength(1);
+      expect(tracer.startSpan).toHaveBeenCalledWith(
+        'execute_tool myTool',
+        expect.objectContaining({ startTime }),
+        context.active(),
+      );
+      expect(tracer.spans[0].end).toHaveBeenCalledWith(startTime + 42);
+      expect(tracer.spans[0].attributes).toMatchObject({
+        'gen_ai.tool.call.result': '{"result":"ok"}',
+        'gen_ai.execute_tool.duration': 0.042,
+      });
+
+      // Completed standalone spans must not be retained or ended twice.
+      integration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+      expect(tracer.spans[0].end).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps deferred tool calls with the same tool ID separate across invocations', () => {
+      for (const callId of ['first', 'second']) {
+        integration.onToolExecutionStart!(
+          makeToolCallStartEvent({ callId, startTime: 1000 }),
+        );
+      }
+      integration.onToolExecutionEnd!(
+        makeToolCallFinishEvent(false, { callId: 'second' }),
+      );
+      integration.onToolExecutionEnd!(
+        makeToolCallFinishEvent(true, { callId: 'first' }),
+      );
+
+      expect(tracer.spans[0].attributes['gen_ai.tool.call.result']).toBe(
+        '{"result":"ok"}',
+      );
+      expect(tracer.spans[1].status).toEqual({
+        code: SpanStatusCode.ERROR,
+        message: 'tool failed',
+      });
+      expect(tracer.spans.every(span => span.ended)).toBe(true);
+    });
+
+    it('honors input and output recording settings for deferred tools', () => {
+      integration.onToolExecutionStart!(
+        makeToolCallStartEvent({
+          startTime: 1000,
+          recordInputs: false,
+          recordOutputs: false,
+        }),
+      );
+      integration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+
+      expect(
+        getSpanStartAttributes(tracer, tracer.spans[0])[
+          'gen_ai.tool.call.arguments'
+        ],
+      ).toBeUndefined();
+      expect(
+        tracer.spans[0].attributes['gen_ai.tool.call.result'],
+      ).toBeUndefined();
+    });
+
     it('creates an execute_tool span with correct attributes', () => {
       integration.onStart!(makeOnStartEvent());
       integration.onStepStart!(makeStepStartEvent());

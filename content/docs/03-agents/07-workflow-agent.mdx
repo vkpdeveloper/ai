@@ -645,6 +645,21 @@ model generation and cannot provide in-flight cancellation or backpressure.
 Each callback receives its tool's `toolsContext` entry after
 `contextSchema` validation.
 
+Inside a durable workflow, globally registered telemetry integrations receive
+tool execution events from a separate step after each tool completes. This
+allows tool `execute` functions to remain `'use step'` functions. The start
+event includes the original `startTime` (Unix epoch milliseconds), and the end
+event includes `toolExecutionMs` and `toolOutput`. `OpenTelemetry` uses these
+values to export an `execute_tool` span with the measured execution interval,
+including failures. Only selected `includeToolsContext` fields cross the
+telemetry step boundary.
+
+These tool spans are reported independently of the model-call spans. They
+become visible after the tool completes, and telemetry `executeTool` wrappers
+cannot establish context around execution in another durable step. The
+agent's own `onToolExecutionStart` and `onToolExecutionEnd` callbacks still run
+around execution in the workflow body.
+
 For highly fragmented tool inputs, `onInputDelta` replay data is part of the
 durable model-step result. Only configure `onInputDelta` when each generated
 delta is needed; omit it to avoid retaining delta replay data.

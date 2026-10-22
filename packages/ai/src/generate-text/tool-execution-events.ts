@@ -23,6 +23,12 @@ type BaseToolExecutionStartFields = {
   readonly callId: string;
 
   /**
+   * Original execution start time in milliseconds since the Unix epoch.
+   * Set when telemetry is dispatched after execution, such as in a workflow.
+   */
+  readonly startTime?: number;
+
+  /**
    * Messages that were sent to the language model to initiate the response that contained the tool call.
    * The messages **do not** include the system prompt nor the assistant response that contained the tool call.
    */
