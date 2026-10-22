@@ -52,7 +52,7 @@ export class GoogleJSONAccumulator {
 
     for (const arg of partialArgs) {
       const rawPath = arg.jsonPath.replace(/^\$\./, '');
-      if (!rawPath) continue;
+      if (!rawPath || rawPath === '$') continue;
 
       const segments = parsePath(rawPath);
 
@@ -71,8 +71,14 @@ export class GoogleJSONAccumulator {
         continue;
       }
 
-      const resolved = resolvePartialArgValue(arg);
-      if (resolved == null) continue;
+      let resolved = resolvePartialArgValue(arg);
+      if (resolved == null) {
+        // Value-less paths close scalars or containers. An unseen path is an
+        // empty container; [] distinguishes arrays from objects.
+        if (existingValue !== undefined) continue;
+        const value = rawPath.endsWith('[]') ? [] : {};
+        resolved = { value, json: JSON.stringify(value) };
+      }
 
       setNestedValue(this.accumulatedArgs, segments, resolved.value);
       delta += this.emitNavigationTo(segments, arg, resolved.json);
