@@ -242,46 +242,106 @@ describe('XaiResponsesLanguageModel', () => {
         `);
       });
 
-      it('should return tool-calls finish reason when function_call is present', async () => {
+      it.each([
+        ['max_output_tokens', 'length'],
+        ['content_filter', 'content-filter'],
+        ['max_prompt_tokens', 'other'],
+        ['max_time_limit', 'other'],
+        ['unknown_reason', 'other'],
+      ])('should map incomplete reason %s to %s', async (reason, unified) => {
         prepareJsonResponse({
           id: 'resp_123',
           object: 'response',
-          status: 'completed',
-          model: 'grok-4-fast-non-reasoning',
+          status: 'incomplete',
+          incomplete_details: { reason },
           output: [
             {
-              type: 'function_call',
-              id: 'fc_123',
-              name: 'weather',
-              arguments: '{"location":"sf"}',
-              call_id: 'call_123',
+              type: 'message',
+              id: 'msg_123',
+              status: 'incomplete',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'The answer is' }],
             },
           ],
-          usage: { input_tokens: 10, output_tokens: 5 },
+          usage: { input_tokens: 12, output_tokens: 16 },
         });
 
         const result = await createModel().doGenerate({
           prompt: TEST_PROMPT,
-          tools: [
-            {
-              type: 'function',
-              name: 'weather',
-              description: 'get weather',
-              inputSchema: {
-                type: 'object',
-                properties: { location: { type: 'string' } },
-              },
-            },
-          ],
+          maxOutputTokens: 16,
         });
 
-        expect(result.finishReason).toMatchInlineSnapshot(`
-          {
-            "raw": "completed",
-            "unified": "tool-calls",
-          }
-        `);
+        expect(result.finishReason).toEqual({ unified, raw: reason });
+        expect(result.content).toEqual([
+          { type: 'text', text: 'The answer is' },
+        ]);
       });
+
+      it.each([
+        ['completed', undefined, 'stop'],
+        ['completed', null, 'stop'],
+        ['incomplete', undefined, 'other'],
+        ['incomplete', null, 'other'],
+      ])(
+        'should fall back to status %s when incomplete_details is %s',
+        async (status, incomplete_details, unified) => {
+          prepareJsonResponse({
+            object: 'response',
+            status,
+            incomplete_details,
+            output: [],
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+          });
+
+          expect(result.finishReason).toEqual({ unified, raw: status });
+        },
+      );
+
+      it.each([
+        ['completed', undefined, 'completed'],
+        ['incomplete', { reason: 'max_output_tokens' }, 'max_output_tokens'],
+      ])(
+        'should return tool-calls finish reason when function_call is present with status %s',
+        async (status, incomplete_details, raw) => {
+          prepareJsonResponse({
+            id: 'resp_123',
+            object: 'response',
+            status,
+            incomplete_details,
+            model: 'grok-4-fast-non-reasoning',
+            output: [
+              {
+                type: 'function_call',
+                id: 'fc_123',
+                name: 'weather',
+                arguments: '{"location":"sf"}',
+                call_id: 'call_123',
+              },
+            ],
+            usage: { input_tokens: 10, output_tokens: 5 },
+          });
+
+          const result = await createModel().doGenerate({
+            prompt: TEST_PROMPT,
+            tools: [
+              {
+                type: 'function',
+                name: 'weather',
+                description: 'get weather',
+                inputSchema: {
+                  type: 'object',
+                  properties: { location: { type: 'string' } },
+                },
+              },
+            ],
+          });
+
+          expect(result.finishReason).toEqual({ unified: 'tool-calls', raw });
+        },
+      );
     });
 
     describe('reasoning content', () => {

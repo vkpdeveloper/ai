@@ -636,13 +636,16 @@ export class XaiResponsesLanguageModel implements LanguageModelV4 {
       }
     }
 
+    const rawFinishReason =
+      response.incomplete_details?.reason ?? response.status;
+
     return {
       content,
       finishReason: {
         unified: hasFunctionCall
           ? 'tool-calls'
-          : mapXaiResponsesFinishReason(response.status),
-        raw: response.status ?? undefined,
+          : mapXaiResponsesFinishReason(rawFinishReason),
+        raw: rawFinishReason,
       },
       usage: response.usage
         ? convertXaiResponsesUsage(response.usage)
