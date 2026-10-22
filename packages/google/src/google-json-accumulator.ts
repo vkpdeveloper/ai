@@ -52,9 +52,10 @@ export class GoogleJSONAccumulator {
 
     for (const arg of partialArgs) {
       const rawPath = arg.jsonPath.replace(/^\$\./, '');
-      if (!rawPath) continue;
+      if (!rawPath || rawPath === '$') continue;
 
       const segments = parsePath(rawPath);
+      if (segments.length === 0) continue;
 
       const existingValue = getNestedValue(this.accumulatedArgs, segments);
       const isStringContinuation =
@@ -71,8 +72,16 @@ export class GoogleJSONAccumulator {
         continue;
       }
 
-      const resolved = resolvePartialArgValue(arg);
-      if (resolved == null) continue;
+      let resolved = resolvePartialArgValue(arg);
+      if (resolved == null) {
+        // Value-less paths terminate strings and containers. Preserve values
+        // already built from earlier chunks; an unseen path denotes an empty
+        // container. Array terminators have a trailing [] (ignored by parsePath).
+        if (existingValue !== undefined) continue;
+
+        const value = rawPath.endsWith('[]') ? [] : {};
+        resolved = { value, json: JSON.stringify(value) };
+      }
 
       setNestedValue(this.accumulatedArgs, segments, resolved.value);
       delta += this.emitNavigationTo(segments, arg, resolved.json);

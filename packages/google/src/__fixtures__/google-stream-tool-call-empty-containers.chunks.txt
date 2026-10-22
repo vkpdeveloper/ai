@@ -1,0 +1,6 @@
+{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"t","willContinue":true}}]}}]}
+{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.id","stringValue":"x","willContinue":true}],"willContinue":true}}]}}]}
+{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.id"},{"jsonPath":"$.emptyArr[]"},{"jsonPath":"$.emptyObj"}],"willContinue":true}}]}}]}
+{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.emptyStr","stringValue":""},{"jsonPath":"$.nested.tags[]"},{"jsonPath":"$.nested"}],"willContinue":true}}]}}]}
+{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"partialArgs":[{"jsonPath":"$.zero","numberValue":0},{"jsonPath":"$.no","boolValue":false},{"jsonPath":"$.nil","nullValue":"NULL_VALUE"}]}}]}}]}
+{"candidates":[{"finishReason":"STOP"}]}
