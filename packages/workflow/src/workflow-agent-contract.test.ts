@@ -4,7 +4,7 @@ import type {
 } from '@ai-sdk/provider';
 import { ToolLoopAgent, tool } from 'ai';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { ModelCallStreamPart } from './do-stream-step.js';
 import { WorkflowAgent } from './workflow-agent.js';
@@ -23,6 +23,59 @@ function weatherTools() {
 // These are passing current-behavior tests, not calls to the unimplemented
 // WorkflowAgent.generate(). Reuse the fixtures for generate parity in Phase 3.
 describe('WorkflowAgent stream and core generate contracts', () => {
+  it.each(['stream', 'generate'] as const)(
+    '%s: preserves local tool telemetry wrappers outside a workflow',
+    async mode => {
+      const events: string[] = [];
+      const onToolExecutionStart = vi.fn(() => {
+        events.push('start');
+      });
+      const onToolExecutionEnd = vi.fn(() => {
+        events.push('end');
+      });
+      const agent = new WorkflowAgent({
+        model: createAgentModel([toolResponse(), textResponse('Done.')]),
+        tools: {
+          weather: tool({
+            inputSchema: z.object({ city: z.string() }),
+            execute: async () => {
+              events.push('execute');
+              return { temperature: 18 };
+            },
+          }),
+        },
+        telemetry: {
+          integrations: {
+            onToolExecutionStart,
+            onToolExecutionEnd,
+            executeTool: async ({ execute }) => {
+              events.push('wrap');
+              return execute();
+            },
+          },
+        },
+      });
+      await agent[mode]({ prompt });
+      expect(events).toEqual(['start', 'wrap', 'execute', 'end']);
+      expect(onToolExecutionStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          callId: 'workflow-agent',
+          toolCall: expect.objectContaining({ toolCallId: 'weather-call' }),
+        }),
+      );
+      expect(onToolExecutionEnd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          callId: 'workflow-agent',
+          toolExecutionMs: expect.any(Number),
+          toolOutput: expect.objectContaining({
+            type: 'tool-result',
+            output: { temperature: 18 },
+          }),
+        }),
+      );
+    },
+  );
+
   it('uses equivalent model responses while distinguishing final-step and all-step tools', async () => {
     const responses = [toolResponse(), textResponse('It is 18°C.')];
     const generateModel = createAgentModel(responses);

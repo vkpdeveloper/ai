@@ -33,6 +33,7 @@ import {
   type ToolCallRepairFunction,
   type ToolChoice,
   type ToolSet,
+  type ToolExecutionEndEvent,
   type InferUITools,
   type UIMessage,
   type LanguageModel,
@@ -44,6 +45,7 @@ import {
 } from 'ai';
 import {
   createRestrictedTelemetryDispatcher,
+  filterIncludedContext,
   DefaultGenerateTextResult,
   addLanguageModelUsage,
   createNullLanguageModelUsage,
@@ -67,6 +69,7 @@ import type {
   ProviderExecutedToolResult,
 } from './do-stream-step.js';
 import { resolveToolContext } from './resolve-tool-context.js';
+import { recordToolExecutionTelemetry } from './record-tool-execution-telemetry.js';
 import { toModelResponseMessages } from './to-model-response-messages.js';
 import { modelCallIterator } from './model-call-iterator.js';
 import {
@@ -1949,6 +1952,11 @@ export class WorkflowAgent<
       mergedOnToolExecutionStart,
       mergedOnToolExecutionEnd,
     } = await this.prepareInvocation(options, mode);
+    const dispatchToolTelemetryInStep =
+      isInWorkflow() &&
+      effectiveTelemetry?.isEnabled !== false &&
+      effectiveTelemetry?.integrations == null &&
+      globalThis.AI_SDK_TELEMETRY_INTEGRATIONS == null;
     const initialResponseMessages: WorkflowAgentGenerateResult<TTools>['responseMessages'] =
       [];
     const abortReason = () =>
@@ -2396,16 +2404,47 @@ export class WorkflowAgent<
           toolContext: resolvedContext,
         } as WorkflowAgentToolExecutionStartEvent<TTools>);
       }
-      await telemetryDispatcher.onToolExecutionStart?.({
+      const telemetryStartEvent = {
+        callId: 'workflow-agent',
         toolCall: toolCallEvent,
         stepNumber: currentStepNumber,
         messages: modelMessages,
-        toolContext: resolvedContext as
-          | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-          | undefined,
-      });
+        toolContext: resolvedContext,
+      };
+      if (!dispatchToolTelemetryInStep) {
+        await telemetryDispatcher.onToolExecutionStart?.(telemetryStartEvent);
+      }
 
       const startTime = Date.now();
+      const onTelemetryEnd = async (
+        durationMs: number,
+        outcome:
+          | { success: true; output: unknown }
+          | { success: false; error: unknown },
+      ) => {
+        const event = {
+          ...telemetryStartEvent,
+          durationMs,
+          ...outcome,
+          toolExecutionMs: durationMs,
+          toolOutput: outcome.success
+            ? {
+                ...toolCallEvent,
+                type: 'tool-result' as const,
+                output: outcome.output,
+              }
+            : {
+                ...toolCallEvent,
+                type: 'tool-error' as const,
+                error: outcome.error,
+              },
+        };
+        if (dispatchToolTelemetryInStep) {
+          await dispatchCompletedToolTelemetry(startTime, event);
+        } else {
+          await telemetryDispatcher.onToolExecutionEnd?.(event);
+        }
+      };
       let result: WorkflowToolExecutionResult;
       try {
         const execute = () =>
@@ -2419,6 +2458,7 @@ export class WorkflowAgent<
             stepSandbox,
           );
         result =
+          !dispatchToolTelemetryInStep &&
           telemetryDispatcher.executeTool != null
             ? await telemetryDispatcher.executeTool({
                 callId: 'workflow-agent',
@@ -2439,14 +2479,7 @@ export class WorkflowAgent<
             error: err,
           } as WorkflowAgentToolExecutionEndEvent<TTools>);
         }
-        await telemetryDispatcher.onToolExecutionEnd?.({
-          toolCall: toolCallEvent,
-          stepNumber: currentStepNumber,
-          durationMs,
-          messages: modelMessages,
-          toolContext: resolvedContext as
-            | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-            | undefined,
+        await onTelemetryEnd(durationMs, {
           success: false,
           error: err,
         });
@@ -2477,32 +2510,43 @@ export class WorkflowAgent<
           } as WorkflowAgentToolExecutionEndEvent<TTools>);
         }
       }
-      if (result.isError) {
-        await telemetryDispatcher.onToolExecutionEnd?.({
-          toolCall: toolCallEvent,
-          stepNumber: currentStepNumber,
-          durationMs,
-          messages: modelMessages,
-          toolContext: resolvedContext as
-            | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-            | undefined,
-          success: false,
-          error: result.rawOutput,
-        });
-      } else {
-        await telemetryDispatcher.onToolExecutionEnd?.({
-          toolCall: toolCallEvent,
-          stepNumber: currentStepNumber,
-          durationMs,
-          messages: modelMessages,
-          toolContext: resolvedContext as
-            | InferToolSetContext<TTools>[keyof InferToolSetContext<TTools>]
-            | undefined,
-          success: true,
-          output: result.rawOutput,
-        });
-      }
+      await onTelemetryEnd(
+        durationMs,
+        result.isError
+          ? { success: false, error: result.rawOutput }
+          : { success: true, output: result.rawOutput },
+      );
       return result;
+    }
+
+    async function dispatchCompletedToolTelemetry(
+      startTime: number,
+      event: ToolExecutionEndEvent,
+    ) {
+      // Only serializable settings and explicitly selected context fields may
+      // cross this boundary. Never send integrations or the tool definition.
+      await recordToolExecutionTelemetry(
+        {
+          functionId: effectiveTelemetry?.functionId,
+          recordInputs: effectiveTelemetry?.recordInputs,
+          recordOutputs: effectiveTelemetry?.recordOutputs,
+        },
+        startTime,
+        {
+          toolCall: event.toolCall,
+          toolOutput: event.toolOutput,
+          toolExecutionMs: event.toolExecutionMs,
+          messages: event.messages,
+          toolContext: filterIncludedContext({
+            context: event.toolContext as Context,
+            includeContext: (
+              effectiveTelemetry?.includeToolsContext as
+                | Record<string, Record<string, boolean | undefined>>
+                | undefined
+            )?.[event.toolCall.toolName],
+          }),
+        },
+      );
     }
 
     const recordProviderExecutedToolTelemetry = async (
@@ -2511,27 +2555,38 @@ export class WorkflowAgent<
       messages: LanguageModelV4Prompt,
       currentStepNumber: number,
     ) => {
-      const toolCallEvent: ToolCall = {
+      const toolCallEvent: ToolExecutionEndEvent['toolCall'] = {
         type: 'tool-call',
         toolCallId: toolCall.toolCallId,
         toolName: toolCall.toolName,
         input: toolCall.input,
+        providerExecuted: true,
       };
       const modelMessages = getToolCallbackMessages(messages);
 
-      await telemetryDispatcher.onToolExecutionStart?.({
+      const startEvent = {
+        callId: 'workflow-agent',
         toolCall: toolCallEvent,
         stepNumber: currentStepNumber,
         messages: modelMessages,
         toolContext: undefined,
-      });
+      };
 
-      await telemetryDispatcher.onToolExecutionEnd?.({
-        toolCall: toolCallEvent,
-        stepNumber: currentStepNumber,
+      const endEvent = {
+        ...startEvent,
         durationMs: 0,
-        messages: modelMessages,
-        toolContext: undefined,
+        toolExecutionMs: 0,
+        toolOutput: result.isError
+          ? {
+              ...toolCallEvent,
+              type: 'tool-error' as const,
+              error: result.rawOutput,
+            }
+          : {
+              ...toolCallEvent,
+              type: 'tool-result' as const,
+              output: result.rawOutput,
+            },
         ...(result.isError
           ? {
               success: false as const,
@@ -2541,7 +2596,13 @@ export class WorkflowAgent<
               success: true as const,
               output: result.rawOutput,
             }),
-      });
+      };
+      if (dispatchToolTelemetryInStep) {
+        await dispatchCompletedToolTelemetry(Date.now(), endEvent);
+      } else {
+        await telemetryDispatcher.onToolExecutionStart?.(startEvent);
+        await telemetryDispatcher.onToolExecutionEnd?.(endEvent);
+      }
     };
 
     // Check for abort before starting

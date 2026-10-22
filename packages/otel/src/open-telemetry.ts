@@ -81,6 +81,13 @@ interface OtelStepStartEvent extends GenerateTextStepStartEvent<ToolSet> {
   readonly stepToolChoice?: unknown;
 }
 
+interface ToolSpanEntry {
+  span: Span;
+  context: OpenTelemetryContext;
+  telemetry: TelemetryOptions | undefined;
+  startTime: number | undefined;
+}
+
 interface CallState {
   operationId: string;
   telemetry: TelemetryOptions | undefined;
@@ -94,7 +101,7 @@ interface CallState {
   embedSpans: Map<string, { span: Span; context: OpenTelemetryContext }>;
   rerankSpan: { span: Span; context: OpenTelemetryContext } | undefined;
   decisionSpan: { span: Span; context: OpenTelemetryContext } | undefined;
-  toolSpans: Map<string, { span: Span; context: OpenTelemetryContext }>;
+  toolSpans: Map<string, ToolSpanEntry>;
   settings: Record<string, unknown>;
   provider: string;
   modelId: string;
@@ -123,6 +130,10 @@ function getGenAIClientPerformanceAttributes(
 
 export class OpenTelemetry implements Telemetry {
   private readonly callStates = new Map<string, CallState>();
+  private readonly standaloneToolSpans = new Map<
+    string,
+    Map<string, ToolSpanEntry>
+  >();
 
   private readonly tracer: Tracer;
   private readonly supplementalAttributes: SupplementalAttributeOptions;
@@ -1051,12 +1062,21 @@ export class OpenTelemetry implements Telemetry {
     state.inferenceToolDefinitions = undefined;
   }
 
-  onToolExecutionStart(event: ToolExecutionStartEvent<ToolSet>): void {
+  onToolExecutionStart(
+    event: InferTelemetryEvent<ToolExecutionStartEvent<ToolSet>>,
+  ): void {
     const state = this.getCallState(event.callId);
-    const parentContext = state?.stepContext ?? state?.rootContext;
-    if (!state || !parentContext) return;
+    // Deferred workflow events are self-contained: there may be no generation
+    // state in this process, and the tool already ran in another durable step.
+    if (!state && event.startTime == null) return;
+    const parentContext =
+      state?.stepContext ?? state?.rootContext ?? context.active();
 
-    const { telemetry } = state;
+    const telemetry = state?.telemetry ?? {
+      recordInputs: event.recordInputs,
+      recordOutputs: event.recordOutputs,
+      functionId: event.functionId,
+    };
     const { toolCall } = event;
 
     const attributes = selectAttributes(telemetry, {
@@ -1076,31 +1096,40 @@ export class OpenTelemetry implements Telemetry {
         attributes: this.getSpanAttributes({
           attributes,
           spanType: 'tool',
-          operationId: state.operationId,
+          operationId: state?.operationId ?? 'ai.toolCall',
           callId: event.callId,
-          runtimeContext: state.runtimeContext,
+          runtimeContext: state?.runtimeContext,
         }),
         kind: SpanKind.INTERNAL,
+        ...(event.startTime == null ? {} : { startTime: event.startTime }),
       },
       parentContext,
     );
     const toolContext = trace.setSpan(parentContext, toolSpan);
 
-    state.toolSpans.set(toolCall.toolCallId, {
+    let toolSpans =
+      state?.toolSpans ?? this.standaloneToolSpans.get(event.callId);
+    if (toolSpans == null) {
+      toolSpans = new Map();
+      this.standaloneToolSpans.set(event.callId, toolSpans);
+    }
+    toolSpans.set(toolCall.toolCallId, {
       span: toolSpan,
       context: toolContext,
+      telemetry,
+      startTime: event.startTime,
     });
   }
 
   onToolExecutionEnd(event: ToolExecutionEndEvent<ToolSet>): void {
     const state = this.getCallState(event.callId);
-    if (!state) return;
-
-    const toolSpanEntry = state.toolSpans.get(event.toolCall.toolCallId);
+    const toolSpans =
+      state?.toolSpans ?? this.standaloneToolSpans.get(event.callId);
+    if (!toolSpans) return;
+    const toolSpanEntry = toolSpans.get(event.toolCall.toolCallId);
     if (!toolSpanEntry) return;
 
-    const { span } = toolSpanEntry;
-    const { telemetry } = state;
+    const { span, telemetry, startTime } = toolSpanEntry;
 
     const { toolOutput } = event;
     span.setAttributes(
@@ -1125,8 +1154,9 @@ export class OpenTelemetry implements Telemetry {
       recordErrorOnSpan(span, toolOutput.error);
     }
 
-    span.end();
-    state.toolSpans.delete(event.toolCall.toolCallId);
+    span.end(startTime == null ? undefined : startTime + event.toolExecutionMs);
+    toolSpans.delete(event.toolCall.toolCallId);
+    if (toolSpans.size === 0) this.standaloneToolSpans.delete(event.callId);
   }
 
   onStepEnd(event: GenerateTextStepEndEvent<ToolSet>): void {

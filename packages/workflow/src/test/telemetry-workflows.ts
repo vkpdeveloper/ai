@@ -1,8 +1,10 @@
 /**
  * Integration test workflows for WorkflowAgent telemetry.
  */
-import { getWritable } from 'workflow';
-import { mockTextModel } from '../providers/mock.js';
+import { tool } from 'ai';
+import { FatalError, getWritable } from 'workflow';
+import { z } from 'zod/v4';
+import { mockSequenceModel, mockTextModel } from '../providers/mock.js';
 import { WorkflowAgent } from '../workflow-agent.js';
 
 async function getGlobalTelemetryIntegrationCount(): Promise<number | null> {
@@ -65,4 +67,56 @@ export async function agentGenerateWithGlobalTelemetry(
     messages: [{ role: 'user', content: prompt }],
   });
   return { text: result.text };
+}
+
+async function echoStep({ text }: { text: string }) {
+  'use step';
+  await new Promise(resolve => setTimeout(resolve, 30));
+  if (text === 'fail') throw new FatalError('echo failed');
+  return text;
+}
+
+export async function agentToolWithGlobalTelemetry(
+  mode: 'stream' | 'generate',
+  text = 'hello',
+  telemetryMode: 'global' | 'disabled' | 'local' | 'redacted' = 'global',
+) {
+  'use workflow';
+  const callbacks: string[] = [];
+  let durationMs = 0;
+  const agent = new WorkflowAgent({
+    model: mockSequenceModel([
+      { type: 'tool-call', toolName: 'echo', input: JSON.stringify({ text }) },
+      { type: 'text', text: 'done' },
+    ]),
+    tools: {
+      echo: tool({
+        inputSchema: z.object({ text: z.string() }),
+        contextSchema: z.object({ public: z.string(), secret: z.string() }),
+        execute: echoStep,
+      }),
+    },
+    toolsContext: { echo: { public: 'visible', secret: 'private' } },
+    telemetry: {
+      functionId: 'tool-telemetry-test',
+      isEnabled: telemetryMode !== 'disabled',
+      integrations: telemetryMode === 'local' ? [] : undefined,
+      recordInputs: telemetryMode !== 'redacted',
+      recordOutputs: telemetryMode !== 'redacted',
+      includeToolsContext: { echo: { public: true } },
+    },
+    onToolExecutionStart: () => {
+      callbacks.push('start');
+    },
+    onToolExecutionEnd: event => {
+      callbacks.push(event.success ? 'success' : 'error');
+      durationMs = event.durationMs;
+    },
+  });
+  const before = Date.now();
+  const result =
+    mode === 'stream'
+      ? await agent.stream({ prompt: text, writable: getWritable() })
+      : await agent.generate({ prompt: text });
+  return { text: result.steps.at(-1)?.text, callbacks, durationMs, before };
 }
