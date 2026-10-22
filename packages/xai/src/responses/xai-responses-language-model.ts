@@ -641,8 +641,10 @@ export class XaiResponsesLanguageModel implements LanguageModelV4 {
       finishReason: {
         unified: hasFunctionCall
           ? 'tool-calls'
-          : mapXaiResponsesFinishReason(response.status),
-        raw: response.status ?? undefined,
+          : mapXaiResponsesFinishReason(
+              response.incomplete_details?.reason ?? response.status,
+            ),
+        raw: response.incomplete_details?.reason ?? response.status,
       },
       usage: response.usage
         ? convertXaiResponsesUsage(response.usage)
