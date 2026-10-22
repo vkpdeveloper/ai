@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { GoogleJSONAccumulator } from './google-json-accumulator';
+import {
+  GoogleJSONAccumulator,
+  type PartialArg,
+} from './google-json-accumulator';
 
 describe('GoogleJSONAccumulator', () => {
   describe('flat paths', () => {
@@ -192,7 +195,7 @@ describe('GoogleJSONAccumulator', () => {
       `);
     });
 
-    it('should skip args with no resolvable value', () => {
+    it('should preserve an empty object represented by a value-less path', () => {
       const accumulator = new GoogleJSONAccumulator();
       const result = accumulator.processPartialArgs([
         { jsonPath: '$.something' },
@@ -200,8 +203,10 @@ describe('GoogleJSONAccumulator', () => {
 
       expect(result).toMatchInlineSnapshot(`
         {
-          "currentJSON": {},
-          "textDelta": "",
+          "currentJSON": {
+            "something": {},
+          },
+          "textDelta": "{"something":{}",
         }
       `);
     });
@@ -216,6 +221,115 @@ describe('GoogleJSONAccumulator', () => {
           "textDelta": "",
         }
       `);
+    });
+  });
+
+  describe('empty containers', () => {
+    it.each<{
+      name: string;
+      partialArgs: PartialArg[];
+      expected: Record<string, unknown>;
+    }>([
+      {
+        name: 'empty arrays and objects between scalar siblings',
+        partialArgs: [
+          { jsonPath: '$.id', stringValue: 'x', willContinue: true },
+          { jsonPath: '$.id' },
+          { jsonPath: '$.emptyArr[]' },
+          { jsonPath: '$.emptyObj' },
+          { jsonPath: '$.emptyStr', stringValue: '' },
+          { jsonPath: '$.nested.tags[]' },
+          { jsonPath: '$.nested' },
+          { jsonPath: '$.zero', numberValue: 0 },
+          { jsonPath: '$.no', boolValue: false },
+          { jsonPath: '$.nil', nullValue: 'NULL_VALUE' },
+        ],
+        expected: {
+          id: 'x',
+          emptyArr: [],
+          emptyObj: {},
+          emptyStr: '',
+          nested: { tags: [] },
+          zero: 0,
+          no: false,
+          nil: null,
+        },
+      },
+      {
+        name: 'empty containers inside arrays',
+        partialArgs: [
+          { jsonPath: '$.items[0]' },
+          { jsonPath: '$.items[1][]' },
+          { jsonPath: '$.items[2].tags[]' },
+          { jsonPath: '$.items[2].options' },
+          { jsonPath: '$.items[3][0][]' },
+          { jsonPath: '$.items[3][1]' },
+          { jsonPath: '$.items[3][]' },
+          { jsonPath: '$.items[]' },
+          { jsonPath: '$.after', stringValue: 'done' },
+        ],
+        expected: {
+          items: [{}, [], { tags: [], options: {} }, [[], {}]],
+          after: 'done',
+        },
+      },
+      {
+        name: 'repeated terminators without overwriting existing values',
+        partialArgs: [
+          { jsonPath: '$.items[0]', stringValue: 'first', willContinue: true },
+          { jsonPath: '$.items[0]' },
+          { jsonPath: '$.items[]' },
+          { jsonPath: '$.items[]' },
+          { jsonPath: '$.empty[]' },
+          { jsonPath: '$.empty[]' },
+          { jsonPath: '$.object' },
+          { jsonPath: '$.object' },
+          { jsonPath: '$.zero', numberValue: 0 },
+          { jsonPath: '$.zero' },
+          { jsonPath: '$.no', boolValue: false },
+          { jsonPath: '$.no' },
+          { jsonPath: '$.nil', nullValue: 'NULL_VALUE' },
+          { jsonPath: '$.nil' },
+          { jsonPath: '$' },
+        ],
+        expected: {
+          items: ['first'],
+          empty: [],
+          object: {},
+          zero: 0,
+          no: false,
+          nil: null,
+        },
+      },
+      {
+        name: 'a root object terminator',
+        partialArgs: [{ jsonPath: '$' }],
+        expected: {},
+      },
+      {
+        name: 'empty containers at special property names',
+        partialArgs: [
+          { jsonPath: '$.__proto__.tags[]' },
+          { jsonPath: '$.constructor.prototype.options' },
+        ],
+        expected: {
+          ['__proto__']: { tags: [] },
+          constructor: { prototype: { options: {} } },
+        },
+      },
+    ])('should preserve $name', ({ partialArgs, expected }) => {
+      const accumulator = new GoogleJSONAccumulator();
+      const expectedJSON = JSON.stringify(expected);
+      let streamedJSON = '';
+
+      for (const arg of partialArgs) {
+        streamedJSON += accumulator.processPartialArgs([arg]).textDelta;
+        expect(expectedJSON.startsWith(streamedJSON)).toBe(true);
+      }
+
+      const { finalJSON, closingDelta } = accumulator.finalize();
+      expect(finalJSON).toBe(expectedJSON);
+      expect(streamedJSON + closingDelta).toBe(expectedJSON);
     });
   });
 
