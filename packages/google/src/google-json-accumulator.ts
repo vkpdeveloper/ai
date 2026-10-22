@@ -51,8 +51,8 @@ export class GoogleJSONAccumulator {
     let delta = '';
 
     for (const arg of partialArgs) {
-      const rawPath = arg.jsonPath.replace(/^\$\./, '');
-      if (!rawPath) continue;
+      const rawPath = arg.jsonPath.replace(/^\$\./, '').replace(/\[\]$/, '');
+      if (!rawPath || arg.jsonPath === '$') continue;
 
       const segments = parsePath(rawPath);
 
@@ -71,8 +71,16 @@ export class GoogleJSONAccumulator {
         continue;
       }
 
-      const resolved = resolvePartialArgValue(arg);
-      if (resolved == null) continue;
+      let resolved = resolvePartialArgValue(arg);
+      if (resolved == null) {
+        // Value-less paths close values already streamed. If the path has no
+        // value yet, it represents an empty container: [] marks an array,
+        // otherwise it is an object. Do not overwrite populated containers
+        // or scalars when their closing markers arrive.
+        if (existingValue !== undefined) continue;
+        const value = arg.jsonPath.endsWith('[]') ? [] : {};
+        resolved = { value, json: JSON.stringify(value) };
+      }
 
       setNestedValue(this.accumulatedArgs, segments, resolved.value);
       delta += this.emitNavigationTo(segments, arg, resolved.json);
