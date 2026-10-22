@@ -901,3 +901,19 @@ all local calls execute concurrently; provider-executed tools are unaffected.
 You can also return the setting from `prepareCall` or pass it to `generate()` or
 `stream()`. Explicit call options take precedence over `prepareCall`, which takes
 precedence over the constructor default.
+
+## Tool telemetry
+
+Globally registered telemetry integrations receive tool execution events from a
+separate durable step after each tool finishes, including failed tools and tools
+resumed after approval. The events include the original execution start time and
+measured duration. `OpenTelemetry` and `LegacyOpenTelemetry` use these values for
+the tool span's timestamps.
+
+Tool spans are independent of the model step's in-memory telemetry state. The
+tool's `execute` function can remain a `'use step'` function. Telemetry integration
+`executeTool` wrappers cannot surround execution across this durable boundary;
+workflow callbacks still run around the actual tool execution. Setting
+`telemetry.isEnabled` to `false` disables this reporting. Tool context is filtered
+according to `telemetry.includeToolsContext` before crossing the telemetry step
+boundary.

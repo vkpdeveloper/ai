@@ -1178,6 +1178,64 @@ describe('OpenTelemetry', () => {
   });
 
   describe('onToolExecutionStart / onToolExecutionEnd', () => {
+    it('reports a durable tool without model call state using its original timing', () => {
+      const startTime = new Date('2026-10-20T10:00:00Z');
+      integration.onToolExecutionStart!(makeToolCallStartEvent({ startTime }));
+      integration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+
+      expect(tracer.spans).toHaveLength(1);
+      expect(tracer.spans[0].name).toBe('execute_tool myTool');
+      expect(tracer.spans[0].ended).toBe(true);
+      expect(tracer.startSpan).toHaveBeenCalledWith(
+        'execute_tool myTool',
+        expect.objectContaining({ startTime }),
+        expect.anything(),
+      );
+      expect(tracer.spans[0].end).toHaveBeenCalledWith(
+        new Date(startTime.getTime() + 42),
+      );
+      // Completed standalone spans must be released rather than ended again.
+      integration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+      expect(tracer.spans[0].end).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps standalone tools with reused tool IDs in different calls separate', () => {
+      for (const callId of ['first', 'second']) {
+        integration.onToolExecutionStart!(
+          makeToolCallStartEvent({ callId, startTime: new Date() }),
+        );
+      }
+      for (const callId of ['second', 'first']) {
+        integration.onToolExecutionEnd!(
+          makeToolCallFinishEvent(true, { callId }),
+        );
+      }
+      expect(tracer.spans).toHaveLength(2);
+      expect(tracer.spans.every(span => span.ended)).toBe(true);
+    });
+
+    it('respects input and output recording settings for standalone tools', () => {
+      integration.onToolExecutionStart!(
+        makeToolCallStartEvent({
+          startTime: new Date(),
+          recordInputs: false,
+          recordOutputs: false,
+        }),
+      );
+      integration.onToolExecutionEnd!(
+        makeToolCallFinishEvent(true, {
+          recordInputs: false,
+          recordOutputs: false,
+        }),
+      );
+      const attributes = (tracer.startSpan as ReturnType<typeof vi.fn>).mock
+        .calls[0][1].attributes;
+      expect(attributes['gen_ai.tool.call.arguments']).toBeUndefined();
+      expect(
+        tracer.spans[0].attributes['gen_ai.tool.call.result'],
+      ).toBeUndefined();
+    });
+
     it('creates an execute_tool span with correct attributes', () => {
       integration.onStart!(makeOnStartEvent());
       integration.onStepStart!(makeStepStartEvent());

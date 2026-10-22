@@ -545,6 +545,64 @@ describe('LegacyOpenTelemetry', () => {
   });
 
   describe('onToolExecutionStart', () => {
+    it('reports a durable tool without model call state using its original timing', () => {
+      const startTime = new Date('2026-10-20T10:00:00Z');
+      otelIntegration.onToolExecutionStart!(
+        makeToolCallStartEvent({ startTime }),
+      );
+      otelIntegration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+
+      expect(tracer.spans).toHaveLength(1);
+      expect(tracer.spans[0].name).toBe('ai.toolCall');
+      expect(tracer.spans[0].ended).toBe(true);
+      expect(tracer.startSpan).toHaveBeenCalledWith(
+        'ai.toolCall',
+        expect.objectContaining({ startTime }),
+        expect.anything(),
+      );
+      expect(tracer.spans[0].end).toHaveBeenCalledWith(
+        new Date(startTime.getTime() + 42),
+      );
+      // Completed standalone spans must be released rather than ended again.
+      otelIntegration.onToolExecutionEnd!(makeToolCallFinishEvent(true));
+      expect(tracer.spans[0].end).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps standalone tools with reused tool IDs in different calls separate', () => {
+      for (const callId of ['first', 'second']) {
+        otelIntegration.onToolExecutionStart!(
+          makeToolCallStartEvent({ callId, startTime: new Date() }),
+        );
+      }
+      for (const callId of ['second', 'first']) {
+        otelIntegration.onToolExecutionEnd!(
+          makeToolCallFinishEvent(true, { callId }),
+        );
+      }
+      expect(tracer.spans).toHaveLength(2);
+      expect(tracer.spans.every(span => span.ended)).toBe(true);
+    });
+
+    it('respects input and output recording settings for standalone tools', () => {
+      otelIntegration.onToolExecutionStart!(
+        makeToolCallStartEvent({
+          startTime: new Date(),
+          recordInputs: false,
+          recordOutputs: false,
+        }),
+      );
+      otelIntegration.onToolExecutionEnd!(
+        makeToolCallFinishEvent(true, {
+          recordInputs: false,
+          recordOutputs: false,
+        }),
+      );
+      const attributes = (tracer.startSpan as ReturnType<typeof vi.fn>).mock
+        .calls[0][1].attributes;
+      expect(attributes['ai.toolCall.args']).toBeUndefined();
+      expect(tracer.spans[0].attributes['ai.toolCall.result']).toBeUndefined();
+    });
+
     it('creates a tool span as child of step span', () => {
       otelIntegration.onStart!(makeOnStartEvent());
       otelIntegration.onStepStart!(makeStepStartEvent());

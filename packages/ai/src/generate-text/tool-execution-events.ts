@@ -19,6 +19,12 @@ type ToolContextFor<TOOL extends ToolSet[keyof ToolSet]> = [
   : InferToolContext<TOOL>;
 
 type BaseToolExecutionStartFields = {
+  /**
+   * Original execution start time when telemetry is dispatched after execution,
+   * for example across a durable workflow step boundary.
+   */
+  readonly startTime?: Date;
+
   /** Unique identifier for this generation call, used to correlate events. */
   readonly callId: string;
 

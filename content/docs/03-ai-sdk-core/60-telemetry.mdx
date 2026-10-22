@@ -396,7 +396,8 @@ export function myIntegration(): Telemetry {
     {
       name: 'onToolExecutionStart',
       type: '(event: ToolExecutionStartEvent) => void | PromiseLike<void>',
-      description: "Called when a tool's execute function is about to run.",
+      description:
+        "Called when a tool's execute function is about to run. Durable workflows can dispatch this after execution with an optional startTime (Date) containing the original execution start time.",
     },
     {
       name: 'onToolExecutionEnd',
