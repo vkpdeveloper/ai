@@ -192,16 +192,18 @@ describe('GoogleJSONAccumulator', () => {
       `);
     });
 
-    it('should skip args with no resolvable value', () => {
+    it('should preserve an empty object from a value-less path', () => {
       const accumulator = new GoogleJSONAccumulator();
       const result = accumulator.processPartialArgs([
-        { jsonPath: '$.something' },
+        { jsonPath: '$.emptyObj' },
       ]);
 
       expect(result).toMatchInlineSnapshot(`
         {
-          "currentJSON": {},
-          "textDelta": "",
+          "currentJSON": {
+            "emptyObj": {},
+          },
+          "textDelta": "{"emptyObj":{}",
         }
       `);
     });
@@ -216,6 +218,105 @@ describe('GoogleJSONAccumulator', () => {
           "textDelta": "",
         }
       `);
+    });
+  });
+
+  describe('container markers', () => {
+    it.each(['$', '$.'])('should ignore the root marker %s', jsonPath => {
+      const accumulator = new GoogleJSONAccumulator();
+      expect(accumulator.processPartialArgs([{ jsonPath }])).toEqual({
+        currentJSON: {},
+        textDelta: '',
+      });
+      expect(accumulator.finalize().finalJSON).toBe('{}');
+    });
+
+    it.each([
+      { path: '$.emptyArr[]', expected: { emptyArr: [] } },
+      { path: '$.nested.tags[]', expected: { nested: { tags: [] } } },
+      { path: '$.nested.emptyObj', expected: { nested: { emptyObj: {} } } },
+      { path: '$.items[0]', expected: { items: [{}] } },
+      { path: '$.items[0][]', expected: { items: [[]] } },
+      { path: '$.items[0].tags[]', expected: { items: [{ tags: [] }] } },
+    ])('should preserve an empty container at $path', ({ path, expected }) => {
+      const accumulator = new GoogleJSONAccumulator();
+      const { currentJSON, textDelta } = accumulator.processPartialArgs([
+        { jsonPath: path },
+      ]);
+      const { finalJSON, closingDelta } = accumulator.finalize();
+
+      expect(currentJSON).toEqual(expected);
+      expect(finalJSON).toBe(JSON.stringify(expected));
+      expect(textDelta + closingDelta).toBe(finalJSON);
+    });
+
+    it('should preserve nonempty values when their closing markers arrive', () => {
+      const accumulator = new GoogleJSONAccumulator();
+      const deltas = [
+        { jsonPath: '$.items[0].name', stringValue: 'x', willContinue: true },
+        { jsonPath: '$.items[0].name' },
+        { jsonPath: '$.items[0]' },
+        { jsonPath: '$.items[]' },
+        { jsonPath: '$.items[]' },
+        { jsonPath: '$.nested.tags[]' },
+        { jsonPath: '$.nested' },
+        { jsonPath: '$.zero', numberValue: 0 },
+        { jsonPath: '$.zero' },
+        { jsonPath: '$.no', boolValue: false },
+        { jsonPath: '$.no' },
+        { jsonPath: '$.nil', nullValue: 'NULL_VALUE' },
+        { jsonPath: '$.nil' },
+        { jsonPath: '$.emptyStr', stringValue: '' },
+        { jsonPath: '$.emptyStr' },
+      ].map(arg => accumulator.processPartialArgs([arg]).textDelta);
+      const { finalJSON, closingDelta } = accumulator.finalize();
+
+      expect(finalJSON).toBe(
+        JSON.stringify({
+          items: [{ name: 'x' }],
+          nested: { tags: [] },
+          zero: 0,
+          no: false,
+          nil: null,
+          emptyStr: '',
+        }),
+      );
+      expect(deltas.join('') + closingDelta).toBe(finalJSON);
+    });
+
+    it('should stream empty containers between continued strings and siblings', () => {
+      const accumulator = new GoogleJSONAccumulator();
+      const deltas = [
+        { jsonPath: '$.id', stringValue: 'x', willContinue: true },
+        { jsonPath: '$.emptyArr[]' },
+        { jsonPath: '$.emptyArr[]' },
+        { jsonPath: '$.emptyObj' },
+        { jsonPath: '$.emptyStr', stringValue: '' },
+        { jsonPath: '$.nested.tags[]' },
+        { jsonPath: '$.nested.emptyObj' },
+        { jsonPath: '$.items[0][]' },
+        { jsonPath: '$.items[1]' },
+        { jsonPath: '$.items[]' },
+        { jsonPath: '$.zero', numberValue: 0 },
+        { jsonPath: '$.no', boolValue: false },
+        { jsonPath: '$.nil', nullValue: 'NULL_VALUE' },
+      ].map(arg => accumulator.processPartialArgs([arg]).textDelta);
+      const { finalJSON, closingDelta } = accumulator.finalize();
+
+      expect(finalJSON).toBe(
+        JSON.stringify({
+          id: 'x',
+          emptyArr: [],
+          emptyObj: {},
+          emptyStr: '',
+          nested: { tags: [], emptyObj: {} },
+          items: [[], {}],
+          zero: 0,
+          no: false,
+          nil: null,
+        }),
+      );
+      expect(deltas.join('') + closingDelta).toBe(finalJSON);
     });
   });
 
