@@ -22,6 +22,9 @@ type BaseToolExecutionStartFields = {
   /** Unique identifier for this generation call, used to correlate events. */
   readonly callId: string;
 
+  /** Actual start time when telemetry is dispatched after execution. */
+  readonly timestamp?: Date;
+
   /**
    * Messages that were sent to the language model to initiate the response that contained the tool call.
    * The messages **do not** include the system prompt nor the assistant response that contained the tool call.
@@ -75,6 +78,9 @@ export type ToolExecutionStartEvent<TOOLS extends ToolSet = ToolSet> = [
 type BaseToolExecutionEndFields = {
   /** Unique identifier for this generation call, used to correlate events. */
   readonly callId: string;
+
+  /** Actual end time when telemetry is dispatched after execution. */
+  readonly timestamp?: Date;
 
   /** Execution time of the tool call in milliseconds. */
   readonly toolExecutionMs: number;

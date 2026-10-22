@@ -1081,6 +1081,7 @@ export class OpenTelemetry implements Telemetry {
           runtimeContext: state.runtimeContext,
         }),
         kind: SpanKind.INTERNAL,
+        startTime: event.timestamp,
       },
       parentContext,
     );
@@ -1125,7 +1126,7 @@ export class OpenTelemetry implements Telemetry {
       recordErrorOnSpan(span, toolOutput.error);
     }
 
-    span.end();
+    span.end(event.timestamp);
     state.toolSpans.delete(event.toolCall.toolCallId);
   }
 

@@ -727,7 +727,7 @@ export class LegacyOpenTelemetry implements Telemetry {
 
     const toolSpan = this.tracer.startSpan(
       'ai.toolCall',
-      { attributes },
+      { attributes, startTime: event.timestamp },
       state.stepContext,
     );
     const toolContext = trace.setSpan(state.stepContext, toolSpan);
@@ -765,7 +765,7 @@ export class LegacyOpenTelemetry implements Telemetry {
       recordSpanError(span, toolOutput.error);
     }
 
-    span.end();
+    span.end(event.timestamp);
     state.toolSpans.delete(event.toolCall.toolCallId);
   }
 

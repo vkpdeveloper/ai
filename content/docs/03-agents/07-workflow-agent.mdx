@@ -595,6 +595,14 @@ Both `prepareCall` and `prepareStep` can also be passed per-call in `stream()`.
 
 Agents provide lifecycle callbacks for logging, observability, and custom telemetry. All callbacks can be defined in the constructor (agent-wide) or in `stream()` (per-call). When both are provided, both fire (constructor first):
 
+For globally registered telemetry integrations, tool execution events are
+reported from a durable telemetry step after each tool completes. The events
+include the original start and end timestamps and measured execution duration,
+so OpenTelemetry tool spans retain their execution timing. This supports tools
+that are themselves steps or suspend the workflow. It does not propagate a tool
+span context into the tool's own steps. Agent lifecycle callbacks still run
+before and after execution in the workflow body.
+
 ```ts
 const agent = new WorkflowAgent({
   model: 'anthropic/claude-sonnet-5.5',
