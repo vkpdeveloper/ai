@@ -2905,6 +2905,99 @@ describe('streamText', () => {
       expect(await result.finishReason).toBe('stop');
     });
 
+    describe.each([
+      { delayedCallback: 'onError', streamRetries: 1 },
+      { delayedCallback: 'onError', streamRetries: 0 },
+      { delayedCallback: 'onChunk', streamRetries: 1 },
+    ])(
+      'provider stream errors with async $delayedCallback and streamRetries: $streamRetries',
+      ({ delayedCallback, streamRetries }) => {
+        it.each(['success', 'error'] as const)(
+          'should retry after an error part followed by a stream error, ending in %s',
+          async outcome => {
+            const errors = [
+              new Error('provider error 1'),
+              new Error('provider error 2'),
+            ];
+            let callCount = 0;
+            const onError = vi.fn(async () => {
+              if (delayedCallback === 'onError') {
+                // Let the pipe propagate the stream error before cancellation.
+                await delay(0);
+              }
+              if (streamRetries === 0) {
+                return { retry: true } as const;
+              }
+            });
+
+            const result = streamText({
+              model: new MockLanguageModelV4({
+                doStream: async () => {
+                  const error = errors[callCount++];
+                  if (callCount === 2 && outcome === 'success') {
+                    return {
+                      stream: convertArrayToReadableStream([
+                        { type: 'text-start', id: '1' },
+                        { type: 'text-delta', id: '1', delta: 'recovered' },
+                        { type: 'text-end', id: '1' },
+                        {
+                          type: 'finish',
+                          finishReason: { unified: 'stop', raw: 'stop' },
+                          usage: testUsage,
+                        },
+                      ]),
+                    };
+                  }
+
+                  let sent = false;
+                  return {
+                    stream: new ReadableStream<LanguageModelV4StreamPart>(
+                      {
+                        pull(controller) {
+                          if (sent) {
+                            controller.error(error);
+                            return;
+                          }
+                          sent = true;
+                          controller.enqueue({ type: 'error', error });
+                        },
+                      },
+                      { highWaterMark: 0 },
+                    ),
+                  };
+                },
+              }),
+              prompt: 'test-input',
+              streamRetries,
+              onChunk: async ({ chunk }) => {
+                if (delayedCallback === 'onChunk' && chunk.type === 'error') {
+                  await delay(0);
+                }
+              },
+              onError,
+            });
+
+            if (outcome === 'success') {
+              const parts = await convertAsyncIterableToArray(
+                result.fullStream,
+              );
+              expect(parts.filter(part => part.type === 'error')).toEqual([]);
+              expect(await result.text).toBe('recovered');
+              expect(await result.finishReason).toBe('stop');
+              expect(onError).toHaveBeenCalledTimes(1);
+            } else {
+              await expect(result.text).rejects.toBe(errors[1]);
+              expect(onError).toHaveBeenCalledTimes(2);
+              expect(onError).toHaveBeenNthCalledWith(2, { error: errors[1] });
+            }
+
+            expect(callCount).toBe(2);
+            expect(onError).toHaveBeenNthCalledWith(1, { error: errors[0] });
+          },
+        );
+      },
+    );
+
     it('should exclude failed-attempt text from structured output state', async () => {
       let callCount = 0;
 
