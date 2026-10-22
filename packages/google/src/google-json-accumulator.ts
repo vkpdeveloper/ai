@@ -52,7 +52,7 @@ export class GoogleJSONAccumulator {
 
     for (const arg of partialArgs) {
       const rawPath = arg.jsonPath.replace(/^\$\./, '');
-      if (!rawPath) continue;
+      if (!rawPath || arg.jsonPath === '$') continue;
 
       const segments = parsePath(rawPath);
 
@@ -71,8 +71,15 @@ export class GoogleJSONAccumulator {
         continue;
       }
 
-      const resolved = resolvePartialArgValue(arg);
-      if (resolved == null) continue;
+      let resolved = resolvePartialArgValue(arg);
+      if (resolved == null) {
+        // Closing markers carry no scalar value. Preserve containers that had
+        // no children, but never replace values accumulated from earlier chunks.
+        if (existingValue !== undefined || arg.willContinue === true) continue;
+        resolved = rawPath.endsWith('[]')
+          ? { value: [], json: '[]' }
+          : { value: {}, json: '{}' };
+      }
 
       setNestedValue(this.accumulatedArgs, segments, resolved.value);
       delta += this.emitNavigationTo(segments, arg, resolved.json);
